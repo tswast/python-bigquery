@@ -1709,9 +1709,9 @@ class TestBigQuery(unittest.TestCase):
 
     def _generate_standard_sql_types_examples(self):
         naive = datetime.datetime(2016, 12, 5, 12, 41, 9)
-        naive_microseconds = datetime.datetime(2016, 12, 5, 12, 41, 9, 250000)
+        naive_microseconds = datetime.datetime(2016, 12, 5, 12, 41, 9, 123456)
         stamp = "%s %s" % (naive.date().isoformat(), naive.time().isoformat())
-        stamp_microseconds = stamp + ".250000"
+        stamp_microseconds = stamp + ".123456"
         zoned = naive.replace(tzinfo=UTC)
         zoned_microseconds = naive_microseconds.replace(tzinfo=UTC)
         numeric = decimal.Decimal("123456789.123456789")
@@ -1772,7 +1772,7 @@ class TestBigQuery(unittest.TestCase):
     def test_query_w_standard_sql_types(self):
         examples = self._generate_standard_sql_types_examples()
         for example in examples:
-            rows = list(Config.CLIENT.query(example["sql"]))
+            rows = list(Config.CLIENT.query(example["sql"]).result())
             self.assertEqual(len(rows), 1)
             self.assertEqual(len(rows[0]), 1)
             self.assertEqual(rows[0][0], example["expected"])
