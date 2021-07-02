@@ -1,4 +1,4 @@
-# Copyright 2020 Google LLC
+# Copyright 2021 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,5 +13,9 @@
 # limitations under the License.
 
 
-class PyarrowMissingWarning(DeprecationWarning):
-    pass
+class BigQueryError(Exception):
+    """Base class for all custom exceptions defined by the BigQuery client."""
+
+
+class LegacyBigQueryStorageError(BigQueryError):
+    """Raised when too old a version of BigQuery Storage extra is detected at runtime."""

@@ -16,7 +16,6 @@
 
 from __future__ import absolute_import
 
-import six
 import copy
 
 import google.cloud._helpers
@@ -79,8 +78,9 @@ class AccessEntry(object):
     """Represents grant of an access role to an entity.
 
     An entry must have exactly one of the allowed :attr:`ENTITY_TYPES`. If
-    anything but ``view`` is set, a ``role`` is also required. ``role`` is
-    omitted for a ``view``, because ``view`` s are always read-only.
+    anything but ``view`` or ``routine`` are set, a ``role`` is also required.
+    ``role`` is omitted for ``view`` and ``routine``, because they are always
+    read-only.
 
     See https://cloud.google.com/bigquery/docs/reference/rest/v2/datasets.
 
@@ -88,17 +88,17 @@ class AccessEntry(object):
         role (str):
             Role granted to the entity. The following string values are
             supported: `'READER'`, `'WRITER'`, `'OWNER'`. It may also be
-            :data:`None` if the ``entity_type`` is ``view``.
+            :data:`None` if the ``entity_type`` is ``view`` or ``routine``.
 
         entity_type (str):
             Type of entity being granted the role. One of :attr:`ENTITY_TYPES`.
 
         entity_id (Union[str, Dict[str, str]]):
-            If the ``entity_type`` is not 'view', the ``entity_id`` is the
-            ``str`` ID of the entity being granted the role. If the
-            ``entity_type`` is 'view', the ``entity_id`` is a ``dict``
-            representing the view from a different dataset to grant access to
-            in the following format::
+            If the ``entity_type`` is not 'view' or 'routine', the ``entity_id``
+            is the ``str`` ID of the entity being granted the role. If the
+            ``entity_type`` is 'view' or 'routine', the ``entity_id`` is a ``dict``
+            representing the view  or routine from a different dataset to grant
+            access to in the following format for views::
 
                 {
                     'projectId': string,
@@ -106,11 +106,19 @@ class AccessEntry(object):
                     'tableId': string
                 }
 
+            For routines::
+
+                {
+                    'projectId': string,
+                    'datasetId': string,
+                    'routineId': string
+                }
+
     Raises:
         ValueError:
             If the ``entity_type`` is not among :attr:`ENTITY_TYPES`, or if a
-            ``view`` has ``role`` set, or a non ``view`` **does not** have a
-            ``role`` set.
+            ``view`` or a ``routine`` has ``role`` set, or a non ``view`` and
+            non ``routine`` **does not** have a ``role`` set.
 
     Examples:
         >>> entry = AccessEntry('OWNER', 'userByEmail', 'user@example.com')
@@ -124,7 +132,15 @@ class AccessEntry(object):
     """
 
     ENTITY_TYPES = frozenset(
-        ["userByEmail", "groupByEmail", "domain", "specialGroup", "view", "iamMember"]
+        [
+            "userByEmail",
+            "groupByEmail",
+            "domain",
+            "specialGroup",
+            "view",
+            "iamMember",
+            "routine",
+        ]
     )
     """Allowed entity types."""
 
@@ -135,10 +151,11 @@ class AccessEntry(object):
                 ", ".join(self.ENTITY_TYPES),
             )
             raise ValueError(message)
-        if entity_type == "view":
+        if entity_type in ("view", "routine"):
             if role is not None:
                 raise ValueError(
-                    "Role must be None for a view. Received " "role: %r" % (role,)
+                    "Role must be None for a %r. Received "
+                    "role: %r" % (entity_type, role)
                 )
         else:
             if role is None:
@@ -203,7 +220,7 @@ class AccessEntry(object):
         return resource
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "AccessEntry":
         """Factory: construct an access entry given its API representation
 
         Args:
@@ -242,9 +259,9 @@ class DatasetReference(object):
     """
 
     def __init__(self, project, dataset_id):
-        if not isinstance(project, six.string_types):
+        if not isinstance(project, str):
             raise ValueError("Pass a string for project")
-        if not isinstance(dataset_id, six.string_types):
+        if not isinstance(dataset_id, str):
             raise ValueError("Pass a string for dataset_id")
         self._project = project
         self._dataset_id = dataset_id
@@ -271,7 +288,7 @@ class DatasetReference(object):
     routine = _get_routine_reference
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "DatasetReference":
         """Factory: construct a dataset reference given its API representation
 
         Args:
@@ -287,7 +304,9 @@ class DatasetReference(object):
         return cls(project, dataset_id)
 
     @classmethod
-    def from_string(cls, dataset_id, default_project=None):
+    def from_string(
+        cls, dataset_id: str, default_project: str = None
+    ) -> "DatasetReference":
         """Construct a dataset reference from dataset ID string.
 
         Args:
@@ -333,7 +352,7 @@ class DatasetReference(object):
 
         return cls(output_project_id, output_dataset_id)
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Construct the API resource representation of this dataset reference
 
         Returns:
@@ -389,7 +408,7 @@ class Dataset(object):
     }
 
     def __init__(self, dataset_ref):
-        if isinstance(dataset_ref, six.string_types):
+        if isinstance(dataset_ref, str):
             dataset_ref = DatasetReference.from_string(dataset_ref)
         self._properties = {"datasetReference": dataset_ref.to_api_repr(), "labels": {}}
 
@@ -409,7 +428,7 @@ class Dataset(object):
         entries.
 
         ``role`` augments the entity type and must be present **unless** the
-        entity type is ``view``.
+        entity type is ``view`` or ``routine``.
 
         Raises:
             TypeError: If 'value' is not a sequence
@@ -526,7 +545,7 @@ class Dataset(object):
 
     @default_table_expiration_ms.setter
     def default_table_expiration_ms(self, value):
-        if not isinstance(value, six.integer_types) and value is not None:
+        if not isinstance(value, int) and value is not None:
             raise ValueError("Pass an integer, or None")
         self._properties["defaultTableExpirationMs"] = _helpers._str_or_none(value)
 
@@ -542,7 +561,7 @@ class Dataset(object):
 
     @description.setter
     def description(self, value):
-        if not isinstance(value, six.string_types) and value is not None:
+        if not isinstance(value, str) and value is not None:
             raise ValueError("Pass a string, or None")
         self._properties["description"] = value
 
@@ -558,7 +577,7 @@ class Dataset(object):
 
     @friendly_name.setter
     def friendly_name(self, value):
-        if not isinstance(value, six.string_types) and value is not None:
+        if not isinstance(value, str) and value is not None:
             raise ValueError("Pass a string, or None")
         self._properties["friendlyName"] = value
 
@@ -574,7 +593,7 @@ class Dataset(object):
 
     @location.setter
     def location(self, value):
-        if not isinstance(value, six.string_types) and value is not None:
+        if not isinstance(value, str) and value is not None:
             raise ValueError("Pass a string, or None")
         self._properties["location"] = value
 
@@ -623,7 +642,7 @@ class Dataset(object):
         self._properties["defaultEncryptionConfiguration"] = api_repr
 
     @classmethod
-    def from_string(cls, full_dataset_id):
+    def from_string(cls, full_dataset_id: str) -> "Dataset":
         """Construct a dataset from fully-qualified dataset ID.
 
         Args:
@@ -647,7 +666,7 @@ class Dataset(object):
         return cls(DatasetReference.from_string(full_dataset_id))
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "Dataset":
         """Factory: construct a dataset given its API representation
 
         Args:
@@ -672,7 +691,7 @@ class Dataset(object):
         dataset._properties = copy.deepcopy(resource)
         return dataset
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Construct the API resource representation of this dataset
 
         Returns:

@@ -14,33 +14,36 @@
 
 """Schemas for BigQuery tables / queries."""
 
-from six.moves import collections_abc
+import collections
+from typing import Optional
 
 from google.cloud.bigquery_v2 import types
 
 
+_DEFAULT_VALUE = object()
 _STRUCT_TYPES = ("RECORD", "STRUCT")
 
 # SQL types reference:
 # https://cloud.google.com/bigquery/data-types#legacy_sql_data_types
 # https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types
 LEGACY_TO_STANDARD_TYPES = {
-    "STRING": types.StandardSqlDataType.STRING,
-    "BYTES": types.StandardSqlDataType.BYTES,
-    "INTEGER": types.StandardSqlDataType.INT64,
-    "INT64": types.StandardSqlDataType.INT64,
-    "FLOAT": types.StandardSqlDataType.FLOAT64,
-    "FLOAT64": types.StandardSqlDataType.FLOAT64,
-    "NUMERIC": types.StandardSqlDataType.NUMERIC,
-    "BOOLEAN": types.StandardSqlDataType.BOOL,
-    "BOOL": types.StandardSqlDataType.BOOL,
-    "GEOGRAPHY": types.StandardSqlDataType.GEOGRAPHY,
-    "RECORD": types.StandardSqlDataType.STRUCT,
-    "STRUCT": types.StandardSqlDataType.STRUCT,
-    "TIMESTAMP": types.StandardSqlDataType.TIMESTAMP,
-    "DATE": types.StandardSqlDataType.DATE,
-    "TIME": types.StandardSqlDataType.TIME,
-    "DATETIME": types.StandardSqlDataType.DATETIME,
+    "STRING": types.StandardSqlDataType.TypeKind.STRING,
+    "BYTES": types.StandardSqlDataType.TypeKind.BYTES,
+    "INTEGER": types.StandardSqlDataType.TypeKind.INT64,
+    "INT64": types.StandardSqlDataType.TypeKind.INT64,
+    "FLOAT": types.StandardSqlDataType.TypeKind.FLOAT64,
+    "FLOAT64": types.StandardSqlDataType.TypeKind.FLOAT64,
+    "NUMERIC": types.StandardSqlDataType.TypeKind.NUMERIC,
+    "BIGNUMERIC": types.StandardSqlDataType.TypeKind.BIGNUMERIC,
+    "BOOLEAN": types.StandardSqlDataType.TypeKind.BOOL,
+    "BOOL": types.StandardSqlDataType.TypeKind.BOOL,
+    "GEOGRAPHY": types.StandardSqlDataType.TypeKind.GEOGRAPHY,
+    "RECORD": types.StandardSqlDataType.TypeKind.STRUCT,
+    "STRUCT": types.StandardSqlDataType.TypeKind.STRUCT,
+    "TIMESTAMP": types.StandardSqlDataType.TypeKind.TIMESTAMP,
+    "DATE": types.StandardSqlDataType.TypeKind.DATE,
+    "TIME": types.StandardSqlDataType.TypeKind.TIME,
+    "DATETIME": types.StandardSqlDataType.TypeKind.DATETIME,
     # no direct conversion from ARRAY, the latter is represented by mode="REPEATED"
 }
 """String names of the legacy SQL types to integer codes of Standard SQL types."""
@@ -65,6 +68,15 @@ class SchemaField(object):
 
         policy_tags (Optional[PolicyTagList]): The policy tag list for the field.
 
+        precision (Optional[int]):
+            Precison (number of digits) of fields with NUMERIC or BIGNUMERIC type.
+
+        scale (Optional[int]):
+            Scale (digits after decimal) of fields with NUMERIC or BIGNUMERIC type.
+
+        max_length (Optional[int]):
+            Maximim length of fields with STRING or BYTES type.
+
     """
 
     def __init__(
@@ -72,19 +84,58 @@ class SchemaField(object):
         name,
         field_type,
         mode="NULLABLE",
-        description=None,
+        description=_DEFAULT_VALUE,
         fields=(),
         policy_tags=None,
+        precision=_DEFAULT_VALUE,
+        scale=_DEFAULT_VALUE,
+        max_length=_DEFAULT_VALUE,
     ):
-        self._name = name
-        self._field_type = field_type
-        self._mode = mode
-        self._description = description
+        self._properties = {
+            "name": name,
+            "type": field_type,
+        }
+        if mode is not None:
+            self._properties["mode"] = mode.upper()
+        if description is not _DEFAULT_VALUE:
+            self._properties["description"] = description
+        if precision is not _DEFAULT_VALUE:
+            self._properties["precision"] = precision
+        if scale is not _DEFAULT_VALUE:
+            self._properties["scale"] = scale
+        if max_length is not _DEFAULT_VALUE:
+            self._properties["maxLength"] = max_length
         self._fields = tuple(fields)
-        self._policy_tags = policy_tags
+
+        self._policy_tags = self._determine_policy_tags(field_type, policy_tags)
+
+    @staticmethod
+    def _determine_policy_tags(
+        field_type: str, given_policy_tags: Optional["PolicyTagList"]
+    ) -> Optional["PolicyTagList"]:
+        """Return the given policy tags, or their suitable representation if `None`.
+
+        Args:
+            field_type: The type of the schema field.
+            given_policy_tags: The policy tags to maybe ajdust.
+        """
+        if given_policy_tags is not None:
+            return given_policy_tags
+
+        if field_type is not None and field_type.upper() in _STRUCT_TYPES:
+            return None
+
+        return PolicyTagList()
+
+    @staticmethod
+    def __get_int(api_repr, name):
+        v = api_repr.get(name, _DEFAULT_VALUE)
+        if v is not _DEFAULT_VALUE:
+            v = int(v)
+        return v
 
     @classmethod
-    def from_api_repr(cls, api_repr):
+    def from_api_repr(cls, api_repr: dict) -> "SchemaField":
         """Return a ``SchemaField`` object deserialized from a dictionary.
 
         Args:
@@ -95,24 +146,33 @@ class SchemaField(object):
         Returns:
             google.cloud.biquery.schema.SchemaField: The ``SchemaField`` object.
         """
+        field_type = api_repr["type"].upper()
+
         # Handle optional properties with default values
         mode = api_repr.get("mode", "NULLABLE")
-        description = api_repr.get("description")
+        description = api_repr.get("description", _DEFAULT_VALUE)
         fields = api_repr.get("fields", ())
 
+        policy_tags = cls._determine_policy_tags(
+            field_type, PolicyTagList.from_api_repr(api_repr.get("policyTags"))
+        )
+
         return cls(
-            field_type=api_repr["type"].upper(),
+            field_type=field_type,
             fields=[cls.from_api_repr(f) for f in fields],
             mode=mode.upper(),
             description=description,
             name=api_repr["name"],
-            policy_tags=PolicyTagList.from_api_repr(api_repr.get("policyTags")),
+            policy_tags=policy_tags,
+            precision=cls.__get_int(api_repr, "precision"),
+            scale=cls.__get_int(api_repr, "scale"),
+            max_length=cls.__get_int(api_repr, "maxLength"),
         )
 
     @property
     def name(self):
         """str: The name of the field."""
-        return self._name
+        return self._properties["name"]
 
     @property
     def field_type(self):
@@ -121,7 +181,7 @@ class SchemaField(object):
         See:
         https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#TableFieldSchema.FIELDS.type
         """
-        return self._field_type
+        return self._properties["type"]
 
     @property
     def mode(self):
@@ -130,17 +190,32 @@ class SchemaField(object):
         See:
         https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#TableFieldSchema.FIELDS.mode
         """
-        return self._mode
+        return self._properties.get("mode")
 
     @property
     def is_nullable(self):
         """bool: whether 'mode' is 'nullable'."""
-        return self._mode == "NULLABLE"
+        return self.mode == "NULLABLE"
 
     @property
     def description(self):
         """Optional[str]: description for the field."""
-        return self._description
+        return self._properties.get("description")
+
+    @property
+    def precision(self):
+        """Optional[int]: Precision (number of digits) for the NUMERIC field."""
+        return self._properties.get("precision")
+
+    @property
+    def scale(self):
+        """Optional[int]: Scale (digits after decimal) for the NUMERIC field."""
+        return self._properties.get("scale")
+
+    @property
+    def max_length(self):
+        """Optional[int]: Maximum length for the STRING or BYTES field."""
+        return self._properties.get("maxLength")
 
     @property
     def fields(self):
@@ -157,27 +232,21 @@ class SchemaField(object):
         """
         return self._policy_tags
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Return a dictionary representing this schema field.
 
         Returns:
             Dict: A dictionary representing the SchemaField in a serialized form.
         """
-        # Put together the basic representation. See http://bit.ly/2hOAT5u.
-        answer = {
-            "mode": self.mode.upper(),
-            "name": self.name,
-            "type": self.field_type.upper(),
-            "description": self.description,
-        }
+        answer = self._properties.copy()
 
         # If this is a RECORD type, then sub-fields are also included,
         # add this to the serialized representation.
         if self.field_type.upper() in _STRUCT_TYPES:
             answer["fields"] = [f.to_api_repr() for f in self.fields]
-
-        # If this contains a policy tag definition, include that as well:
-        if self.policy_tags is not None:
+        else:
+            # Explicitly include policy tag definition (we must not do it for RECORD
+            # fields, because those are not leaf fields).
             answer["policyTags"] = self.policy_tags.to_api_repr()
 
         # Done; return the serialized dictionary.
@@ -191,16 +260,32 @@ class SchemaField(object):
         Returns:
             Tuple: The contents of this :class:`~google.cloud.bigquery.schema.SchemaField`.
         """
-        return (
-            self._name,
-            self._field_type.upper(),
-            self._mode.upper(),
-            self._description,
-            self._fields,
-            self._policy_tags,
+        field_type = self.field_type.upper()
+        if field_type == "STRING" or field_type == "BYTES":
+            if self.max_length is not None:
+                field_type = f"{field_type}({self.max_length})"
+        elif field_type.endswith("NUMERIC"):
+            if self.precision is not None:
+                if self.scale is not None:
+                    field_type = f"{field_type}({self.precision}, {self.scale})"
+                else:
+                    field_type = f"{field_type}({self.precision})"
+
+        policy_tags = (
+            () if self._policy_tags is None else tuple(sorted(self._policy_tags.names))
         )
 
-    def to_standard_sql(self):
+        return (
+            self.name,
+            field_type,
+            # Mode is always str, if not given it defaults to a str value
+            self.mode.upper(),  # pytype: disable=attribute-error
+            self.description,
+            self._fields,
+            policy_tags,
+        )
+
+    def to_standard_sql(self) -> types.StandardSqlField:
         """Return the field as the standard SQL field representation object.
 
         Returns:
@@ -209,26 +294,34 @@ class SchemaField(object):
         sql_type = types.StandardSqlDataType()
 
         if self.mode == "REPEATED":
-            sql_type.type_kind = types.StandardSqlDataType.ARRAY
+            sql_type.type_kind = types.StandardSqlDataType.TypeKind.ARRAY
         else:
             sql_type.type_kind = LEGACY_TO_STANDARD_TYPES.get(
-                self.field_type, types.StandardSqlDataType.TYPE_KIND_UNSPECIFIED
+                self.field_type,
+                types.StandardSqlDataType.TypeKind.TYPE_KIND_UNSPECIFIED,
             )
 
-        if sql_type.type_kind == types.StandardSqlDataType.ARRAY:  # noqa: E721
+        if sql_type.type_kind == types.StandardSqlDataType.TypeKind.ARRAY:  # noqa: E721
             array_element_type = LEGACY_TO_STANDARD_TYPES.get(
-                self.field_type, types.StandardSqlDataType.TYPE_KIND_UNSPECIFIED
+                self.field_type,
+                types.StandardSqlDataType.TypeKind.TYPE_KIND_UNSPECIFIED,
             )
             sql_type.array_element_type.type_kind = array_element_type
 
             # ARRAY cannot directly contain other arrays, only scalar types and STRUCTs
             # https://cloud.google.com/bigquery/docs/reference/standard-sql/data-types#array-type
-            if array_element_type == types.StandardSqlDataType.STRUCT:  # noqa: E721
+            if (
+                array_element_type
+                == types.StandardSqlDataType.TypeKind.STRUCT  # noqa: E721
+            ):
                 sql_type.array_element_type.struct_type.fields.extend(
                     field.to_standard_sql() for field in self.fields
                 )
 
-        elif sql_type.type_kind == types.StandardSqlDataType.STRUCT:  # noqa: E721
+        elif (
+            sql_type.type_kind
+            == types.StandardSqlDataType.TypeKind.STRUCT  # noqa: E721
+        ):
             sql_type.struct_type.fields.extend(
                 field.to_standard_sql() for field in self.fields
             )
@@ -260,21 +353,7 @@ def _parse_schema_resource(info):
         Optional[Sequence[google.cloud.bigquery.schema.SchemaField`]:
             A list of parsed fields, or ``None`` if no "fields" key found.
     """
-    if "fields" not in info:
-        return ()
-
-    schema = []
-    for r_field in info["fields"]:
-        name = r_field["name"]
-        field_type = r_field["type"]
-        mode = r_field.get("mode", "NULLABLE")
-        description = r_field.get("description")
-        sub_fields = _parse_schema_resource(r_field)
-        policy_tags = PolicyTagList.from_api_repr(r_field.get("policyTags"))
-        schema.append(
-            SchemaField(name, field_type, mode, description, sub_fields, policy_tags)
-        )
-    return schema
+    return [SchemaField.from_api_repr(f) for f in info.get("fields", ())]
 
 
 def _build_schema_resource(fields):
@@ -310,7 +389,7 @@ def _to_schema_fields(schema):
         instance or a compatible mapping representation of the field.
     """
     for field in schema:
-        if not isinstance(field, (SchemaField, collections_abc.Mapping)):
+        if not isinstance(field, (SchemaField, collections.abc.Mapping)):
             raise ValueError(
                 "Schema items must either be fields or compatible "
                 "mapping representations."
@@ -367,7 +446,7 @@ class PolicyTagList(object):
         return "PolicyTagList{}".format(self._key())
 
     @classmethod
-    def from_api_repr(cls, api_repr):
+    def from_api_repr(cls, api_repr: dict) -> "PolicyTagList":
         """Return a :class:`PolicyTagList` object deserialized from a dict.
 
         This method creates a new ``PolicyTagList`` instance that points to
@@ -390,7 +469,7 @@ class PolicyTagList(object):
         names = api_repr.get("names", ())
         return cls(names=names)
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Return a dictionary representing this object.
 
         This method returns the properties dict of the ``PolicyTagList``

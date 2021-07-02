@@ -28,17 +28,20 @@ The main concepts with this API are:
 """
 
 
-from pkg_resources import get_distribution
+from google.cloud.bigquery import version as bigquery_version
 
-__version__ = get_distribution("google-cloud-bigquery").version
+__version__ = bigquery_version.__version__
 
 from google.cloud.bigquery.client import Client
 from google.cloud.bigquery.dataset import AccessEntry
 from google.cloud.bigquery.dataset import Dataset
 from google.cloud.bigquery.dataset import DatasetReference
 from google.cloud.bigquery import enums
+from google.cloud.bigquery.enums import AutoRowIDs
+from google.cloud.bigquery.enums import KeyResultStatementKind
+from google.cloud.bigquery.enums import SqlTypeNames
 from google.cloud.bigquery.enums import StandardSqlDataTypes
-from google.cloud.bigquery.exceptions import PyarrowMissingWarning
+from google.cloud.bigquery.exceptions import LegacyBigQueryStorageError
 from google.cloud.bigquery.external_config import ExternalConfig
 from google.cloud.bigquery.external_config import BigtableOptions
 from google.cloud.bigquery.external_config import BigtableColumnFamily
@@ -46,6 +49,7 @@ from google.cloud.bigquery.external_config import BigtableColumn
 from google.cloud.bigquery.external_config import CSVOptions
 from google.cloud.bigquery.external_config import GoogleSheetsOptions
 from google.cloud.bigquery.external_config import ExternalSourceFormat
+from google.cloud.bigquery.format_options import ParquetOptions
 from google.cloud.bigquery.job import Compression
 from google.cloud.bigquery.job import CopyJob
 from google.cloud.bigquery.job import CopyJobConfig
@@ -60,16 +64,21 @@ from google.cloud.bigquery.job import QueryJob
 from google.cloud.bigquery.job import QueryJobConfig
 from google.cloud.bigquery.job import QueryPriority
 from google.cloud.bigquery.job import SchemaUpdateOption
+from google.cloud.bigquery.job import ScriptOptions
 from google.cloud.bigquery.job import SourceFormat
 from google.cloud.bigquery.job import UnknownJob
 from google.cloud.bigquery.job import WriteDisposition
 from google.cloud.bigquery.model import Model
 from google.cloud.bigquery.model import ModelReference
 from google.cloud.bigquery.query import ArrayQueryParameter
+from google.cloud.bigquery.query import ArrayQueryParameterType
 from google.cloud.bigquery.query import ScalarQueryParameter
+from google.cloud.bigquery.query import ScalarQueryParameterType
 from google.cloud.bigquery.query import StructQueryParameter
+from google.cloud.bigquery.query import StructQueryParameterType
 from google.cloud.bigquery.query import UDFResource
 from google.cloud.bigquery.retry import DEFAULT_RETRY
+from google.cloud.bigquery.routine import DeterminismLevel
 from google.cloud.bigquery.routine import Routine
 from google.cloud.bigquery.routine import RoutineArgument
 from google.cloud.bigquery.routine import RoutineReference
@@ -92,6 +101,9 @@ __all__ = [
     "ArrayQueryParameter",
     "ScalarQueryParameter",
     "StructQueryParameter",
+    "ArrayQueryParameterType",
+    "ScalarQueryParameterType",
+    "StructQueryParameterType",
     # Datasets
     "Dataset",
     "DatasetReference",
@@ -128,29 +140,35 @@ __all__ = [
     "BigtableColumn",
     "CSVOptions",
     "GoogleSheetsOptions",
+    "ParquetOptions",
+    "ScriptOptions",
     "DEFAULT_RETRY",
     # Enum Constants
     "enums",
+    "AutoRowIDs",
     "Compression",
     "CreateDisposition",
     "DestinationFormat",
+    "DeterminismLevel",
     "ExternalSourceFormat",
     "Encoding",
+    "KeyResultStatementKind",
     "QueryPriority",
     "SchemaUpdateOption",
-    "StandardSqlDataTypes",
     "SourceFormat",
+    "SqlTypeNames",
+    "StandardSqlDataTypes",
     "WriteDisposition",
     # EncryptionConfiguration
     "EncryptionConfiguration",
-    # Errors and warnings
-    "PyarrowMissingWarning",
+    # Custom exceptions
+    "LegacyBigQueryStorageError",
 ]
 
 
 def load_ipython_extension(ipython):
     """Called by IPython when this module is loaded as an IPython extension."""
-    from google.cloud.bigquery.magics import _cell_magic
+    from google.cloud.bigquery.magics.magics import _cell_magic
 
     ipython.register_magic_function(
         _cell_magic, magic_kind="cell", magic_name="bigquery"

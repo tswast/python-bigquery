@@ -74,6 +74,7 @@ class TestExternalConfig(unittest.TestCase):
         ec.autodetect = True
         ec.ignore_unknown_values = False
         ec.compression = "compression"
+        ec.connection_id = "path/to/connection"
         ec.schema = [schema.SchemaField("full_name", "STRING", mode="REQUIRED")]
 
         exp_schema = {
@@ -82,7 +83,7 @@ class TestExternalConfig(unittest.TestCase):
                     "name": "full_name",
                     "type": "STRING",
                     "mode": "REQUIRED",
-                    "description": None,
+                    "policyTags": {"names": []},
                 }
             ]
         }
@@ -94,9 +95,16 @@ class TestExternalConfig(unittest.TestCase):
             "autodetect": True,
             "ignoreUnknownValues": False,
             "compression": "compression",
+            "connectionId": "path/to/connection",
             "schema": exp_schema,
         }
         self.assertEqual(got_resource, exp_resource)
+
+    def test_connection_id(self):
+        ec = external_config.ExternalConfig("")
+        self.assertIsNone(ec.connection_id)
+        ec.connection_id = "path/to/connection"
+        self.assertEqual(ec.connection_id, "path/to/connection")
 
     def test_schema_None(self):
         ec = external_config.ExternalConfig("")
@@ -181,6 +189,7 @@ class TestExternalConfig(unittest.TestCase):
                 "hivePartitioningOptions": {
                     "sourceUriPrefix": "http://foo/bar",
                     "mode": "STRINGS",
+                    "requirePartitionFilter": True,
                 },
             },
         )
@@ -194,6 +203,7 @@ class TestExternalConfig(unittest.TestCase):
         )
         self.assertEqual(ec.hive_partitioning.source_uri_prefix, "http://foo/bar")
         self.assertEqual(ec.hive_partitioning.mode, "STRINGS")
+        self.assertEqual(ec.hive_partitioning.require_partition_filter, True)
 
         # converting back to API representation should yield the same result
         got_resource = ec.to_api_repr()
@@ -210,6 +220,7 @@ class TestExternalConfig(unittest.TestCase):
         hive_partitioning = external_config.HivePartitioningOptions()
         hive_partitioning.source_uri_prefix = "http://foo/bar"
         hive_partitioning.mode = "STRINGS"
+        hive_partitioning.require_partition_filter = False
 
         ec = external_config.ExternalConfig("FORMAT_FOO")
         ec.hive_partitioning = hive_partitioning
@@ -221,6 +232,7 @@ class TestExternalConfig(unittest.TestCase):
             "hivePartitioningOptions": {
                 "sourceUriPrefix": "http://foo/bar",
                 "mode": "STRINGS",
+                "requirePartitionFilter": False,
             },
         }
         self.assertEqual(got_resource, expected_resource)
@@ -414,6 +426,106 @@ class TestExternalConfig(unittest.TestCase):
                     }
                 ],
             },
+        }
+
+        got_resource = ec.to_api_repr()
+
+        self.assertEqual(got_resource, exp_resource)
+
+    def test_parquet_options_getter(self):
+        from google.cloud.bigquery.format_options import ParquetOptions
+
+        parquet_options = ParquetOptions.from_api_repr(
+            {"enumAsString": True, "enableListInference": False}
+        )
+        ec = external_config.ExternalConfig(
+            external_config.ExternalSourceFormat.PARQUET
+        )
+
+        self.assertIsNone(ec.parquet_options.enum_as_string)
+        self.assertIsNone(ec.parquet_options.enable_list_inference)
+
+        ec._options = parquet_options
+
+        self.assertTrue(ec.parquet_options.enum_as_string)
+        self.assertFalse(ec.parquet_options.enable_list_inference)
+
+        self.assertIs(ec.parquet_options, ec.options)
+
+    def test_parquet_options_getter_non_parquet_format(self):
+        ec = external_config.ExternalConfig(external_config.ExternalSourceFormat.CSV)
+        self.assertIsNone(ec.parquet_options)
+
+    def test_parquet_options_setter(self):
+        from google.cloud.bigquery.format_options import ParquetOptions
+
+        parquet_options = ParquetOptions.from_api_repr(
+            {"enumAsString": False, "enableListInference": True}
+        )
+        ec = external_config.ExternalConfig(
+            external_config.ExternalSourceFormat.PARQUET
+        )
+
+        ec.parquet_options = parquet_options
+
+        # Setting Parquet options should be reflected in the generic options attribute.
+        self.assertFalse(ec.options.enum_as_string)
+        self.assertTrue(ec.options.enable_list_inference)
+
+    def test_parquet_options_setter_non_parquet_format(self):
+        from google.cloud.bigquery.format_options import ParquetOptions
+
+        parquet_options = ParquetOptions.from_api_repr(
+            {"enumAsString": False, "enableListInference": True}
+        )
+        ec = external_config.ExternalConfig(external_config.ExternalSourceFormat.CSV)
+
+        with self.assertRaisesRegex(TypeError, "Cannot set.*source format is CSV"):
+            ec.parquet_options = parquet_options
+
+    def test_from_api_repr_parquet(self):
+        from google.cloud.bigquery.format_options import ParquetOptions
+
+        resource = _copy_and_update(
+            self.BASE_RESOURCE,
+            {
+                "sourceFormat": "PARQUET",
+                "parquetOptions": {"enumAsString": True, "enableListInference": False},
+            },
+        )
+
+        ec = external_config.ExternalConfig.from_api_repr(resource)
+
+        self._verify_base(ec)
+        self.assertEqual(ec.source_format, external_config.ExternalSourceFormat.PARQUET)
+        self.assertIsInstance(ec.options, ParquetOptions)
+        self.assertTrue(ec.parquet_options.enum_as_string)
+        self.assertFalse(ec.parquet_options.enable_list_inference)
+
+        got_resource = ec.to_api_repr()
+
+        self.assertEqual(got_resource, resource)
+
+        del resource["parquetOptions"]["enableListInference"]
+        ec = external_config.ExternalConfig.from_api_repr(resource)
+        self.assertIsNone(ec.options.enable_list_inference)
+        got_resource = ec.to_api_repr()
+        self.assertEqual(got_resource, resource)
+
+    def test_to_api_repr_parquet(self):
+        from google.cloud.bigquery.format_options import ParquetOptions
+
+        ec = external_config.ExternalConfig(
+            external_config.ExternalSourceFormat.PARQUET
+        )
+        options = ParquetOptions.from_api_repr(
+            dict(enumAsString=False, enableListInference=True)
+        )
+        ec._options = options
+
+        exp_resource = {
+            "sourceFormat": external_config.ExternalSourceFormat.PARQUET,
+            "parquetOptions": {"enumAsString": False, "enableListInference": True},
         }
 
         got_resource = ec.to_api_repr()

@@ -19,7 +19,6 @@
 import copy
 
 from google.protobuf import json_format
-import six
 
 import google.cloud._helpers
 from google.api_core import datetime_helpers
@@ -55,7 +54,7 @@ class Model(object):
     def __init__(self, model_ref):
         # Use _proto on read-only properties to use it's built-in type
         # conversion.
-        self._proto = types.Model()
+        self._proto = types.Model()._pb
 
         # Use _properties on read-write properties to match the REST API
         # semantics. The BigQuery API makes a distinction between an unset
@@ -63,7 +62,7 @@ class Model(object):
         # buffer classes do not.
         self._properties = {}
 
-        if isinstance(model_ref, six.string_types):
+        if isinstance(model_ref, str):
             model_ref = ModelReference.from_string(model_ref)
 
         if model_ref:
@@ -151,13 +150,13 @@ class Model(object):
 
     @property
     def model_type(self):
-        """google.cloud.bigquery_v2.gapic.enums.Model.ModelType: Type of the
+        """google.cloud.bigquery_v2.types.Model.ModelType: Type of the
         model resource.
 
         Read-only.
 
         The value is one of elements of the
-        :class:`~google.cloud.bigquery_v2.gapic.enums.Model.ModelType`
+        :class:`~google.cloud.bigquery_v2.types.Model.ModelType`
         enumeration.
         """
         return self._proto.model_type
@@ -280,7 +279,7 @@ class Model(object):
         self._properties["encryptionConfiguration"] = api_repr
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "Model":
         """Factory: construct a model resource given its API representation
 
         Args:
@@ -305,9 +304,15 @@ class Model(object):
             start_time = datetime_helpers.from_microseconds(1e3 * float(start_time))
             training_run["startTime"] = datetime_helpers.to_rfc3339(start_time)
 
-        this._proto = json_format.ParseDict(
-            resource, types.Model(), ignore_unknown_fields=True
-        )
+        try:
+            this._proto = json_format.ParseDict(
+                resource, types.Model()._pb, ignore_unknown_fields=True
+            )
+        except json_format.ParseError:
+            resource["modelType"] = "MODEL_TYPE_UNSPECIFIED"
+            this._proto = json_format.ParseDict(
+                resource, types.Model()._pb, ignore_unknown_fields=True
+            )
         return this
 
     def _build_resource(self, filter_fields):
@@ -316,6 +321,14 @@ class Model(object):
 
     def __repr__(self):
         return "Model(reference={})".format(repr(self.reference))
+
+    def to_api_repr(self) -> dict:
+        """Construct the API resource representation of this model.
+
+        Returns:
+            Dict[str, object]: Model reference represented as an API resource
+        """
+        return json_format.MessageToDict(self._proto)
 
 
 class ModelReference(object):
@@ -326,7 +339,7 @@ class ModelReference(object):
     """
 
     def __init__(self):
-        self._proto = types.ModelReference()
+        self._proto = types.ModelReference()._pb
         self._properties = {}
 
     @property
@@ -370,12 +383,15 @@ class ModelReference(object):
         # field values.
         ref._properties = resource
         ref._proto = json_format.ParseDict(
-            resource, types.ModelReference(), ignore_unknown_fields=True
+            resource, types.ModelReference()._pb, ignore_unknown_fields=True
         )
+
         return ref
 
     @classmethod
-    def from_string(cls, model_id, default_project=None):
+    def from_string(
+        cls, model_id: str, default_project: str = None
+    ) -> "ModelReference":
         """Construct a model reference from model ID string.
 
         Args:
@@ -403,7 +419,7 @@ class ModelReference(object):
             {"projectId": proj, "datasetId": dset, "modelId": model}
         )
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Construct the API resource representation of this model reference.
 
         Returns:
@@ -440,7 +456,7 @@ def _model_arg_to_model_ref(value, default_project=None):
 
     This function keeps ModelReference and other kinds of objects unchanged.
     """
-    if isinstance(value, six.string_types):
+    if isinstance(value, str):
         return ModelReference.from_string(value, default_project=default_project)
     if isinstance(value, Model):
         return value.reference

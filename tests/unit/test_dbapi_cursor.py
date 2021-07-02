@@ -12,12 +12,12 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 
+import mock
 import operator as op
 import unittest
-import warnings
 
-import mock
-import six
+import pytest
+
 
 try:
     import pyarrow
@@ -27,11 +27,9 @@ except ImportError:  # pragma: NO COVER
 from google.api_core import exceptions
 
 try:
-    from google.cloud import bigquery_storage_v1
-    from google.cloud import bigquery_storage_v1beta1
+    from google.cloud import bigquery_storage
 except ImportError:  # pragma: NO COVER
-    bigquery_storage_v1 = None
-    bigquery_storage_v1beta1 = None
+    bigquery_storage = None
 
 from tests.unit.helpers import _to_pyarrow
 
@@ -69,41 +67,26 @@ class TestCursor(unittest.TestCase):
             num_dml_affected_rows=num_dml_affected_rows,
             dry_run=dry_run_job,
             total_bytes_processed=total_bytes_processed,
+            rows=rows,
         )
-        mock_client.list_rows.return_value = rows
         mock_client._default_query_job_config = default_query_job_config
 
         # Assure that the REST client gets used, not the BQ Storage client.
-        mock_client._create_bqstorage_client.return_value = None
+        mock_client._ensure_bqstorage_client.return_value = None
 
         return mock_client
 
-    def _mock_bqstorage_client(self, rows=None, stream_count=0, v1beta1=False):
-        from google.cloud.bigquery_storage_v1 import client
-        from google.cloud.bigquery_storage_v1 import types
-        from google.cloud.bigquery_storage_v1beta1 import types as types_v1beta1
-
+    def _mock_bqstorage_client(self, rows=None, stream_count=0):
         if rows is None:
             rows = []
 
-        if v1beta1:
-            mock_client = mock.create_autospec(
-                bigquery_storage_v1beta1.BigQueryStorageClient
-            )
-            mock_read_session = mock.MagicMock(
-                streams=[
-                    types_v1beta1.Stream(name="streams/stream_{}".format(i))
-                    for i in range(stream_count)
-                ]
-            )
-        else:
-            mock_client = mock.create_autospec(client.BigQueryReadClient)
-            mock_read_session = mock.MagicMock(
-                streams=[
-                    types.ReadStream(name="streams/stream_{}".format(i))
-                    for i in range(stream_count)
-                ]
-            )
+        mock_client = mock.create_autospec(bigquery_storage.BigQueryReadClient)
+        mock_read_session = mock.MagicMock(
+            streams=[
+                bigquery_storage.types.ReadStream(name="streams/stream_{}".format(i))
+                for i in range(stream_count)
+            ]
+        )
 
         mock_client.create_read_session.return_value = mock_read_session
 
@@ -120,8 +103,12 @@ class TestCursor(unittest.TestCase):
         num_dml_affected_rows=None,
         dry_run=False,
         total_bytes_processed=0,
+        rows=None,
     ):
         from google.cloud.bigquery import job
+
+        if rows is None:
+            rows = []
 
         mock_job = mock.create_autospec(job.QueryJob)
         mock_job.error_result = None
@@ -132,12 +119,13 @@ class TestCursor(unittest.TestCase):
             mock_job.result.side_effect = exceptions.NotFound
             mock_job.total_bytes_processed = total_bytes_processed
         else:
-            mock_job.result.return_value = mock_job
+            mock_job.result.return_value = rows
             mock_job._query_results = self._mock_results(
                 total_rows=total_rows,
                 schema=schema,
                 num_dml_affected_rows=num_dml_affected_rows,
             )
+            mock_job.destination.project = "P"
             mock_job.destination.to_bqstorage.return_value = (
                 "projects/P/datasets/DS/tables/T"
             )
@@ -192,11 +180,12 @@ class TestCursor(unittest.TestCase):
             "fetchone",
             "setinputsizes",
             "setoutputsize",
+            "__iter__",
         )
 
         for method in method_names:
-            with six.assertRaisesRegex(
-                self, ProgrammingError, r"Operating on a closed cursor\."
+            with self.assertRaisesRegex(
+                ProgrammingError, r"Operating on a closed cursor\."
             ):
                 getattr(cursor, method)()
 
@@ -291,7 +280,7 @@ class TestCursor(unittest.TestCase):
         self.assertEqual(rows[0], (1,))
 
     @unittest.skipIf(
-        bigquery_storage_v1 is None, "Requires `google-cloud-bigquery-storage`"
+        bigquery_storage is None, "Requires `google-cloud-bigquery-storage`"
     )
     @unittest.skipIf(pyarrow is None, "Requires `pyarrow`")
     def test_fetchall_w_bqstorage_client_fetch_success(self):
@@ -322,6 +311,7 @@ class TestCursor(unittest.TestCase):
         mock_bqstorage_client = self._mock_bqstorage_client(
             stream_count=1, rows=bqstorage_streamed_rows,
         )
+        mock_client._ensure_bqstorage_client.return_value = mock_bqstorage_client
 
         connection = dbapi.connect(
             client=mock_client, bqstorage_client=mock_bqstorage_client,
@@ -345,77 +335,14 @@ class TestCursor(unittest.TestCase):
         self.assertEqual(sorted_row_data, expected_row_data)
 
     @unittest.skipIf(
-        bigquery_storage_v1beta1 is None, "Requires `google-cloud-bigquery-storage`"
-    )
-    @unittest.skipIf(pyarrow is None, "Requires `pyarrow`")
-    def test_fetchall_w_bqstorage_client_v1beta1_fetch_success(self):
-        from google.cloud.bigquery import dbapi
-        from google.cloud.bigquery import table
-
-        # use unordered data to also test any non-determenistic key order in dicts
-        row_data = [
-            table.Row([1.4, 1.1, 1.3, 1.2], {"bar": 3, "baz": 2, "foo": 1, "quux": 0}),
-            table.Row([2.4, 2.1, 2.3, 2.2], {"bar": 3, "baz": 2, "foo": 1, "quux": 0}),
-        ]
-        bqstorage_streamed_rows = [
-            {
-                "bar": _to_pyarrow(1.2),
-                "foo": _to_pyarrow(1.1),
-                "quux": _to_pyarrow(1.4),
-                "baz": _to_pyarrow(1.3),
-            },
-            {
-                "bar": _to_pyarrow(2.2),
-                "foo": _to_pyarrow(2.1),
-                "quux": _to_pyarrow(2.4),
-                "baz": _to_pyarrow(2.3),
-            },
-        ]
-
-        mock_client = self._mock_client(rows=row_data)
-        mock_bqstorage_client = self._mock_bqstorage_client(
-            stream_count=1, rows=bqstorage_streamed_rows, v1beta1=True
-        )
-
-        connection = dbapi.connect(
-            client=mock_client, bqstorage_client=mock_bqstorage_client,
-        )
-        cursor = connection.cursor()
-        cursor.execute("SELECT foo, bar FROM some_table")
-
-        with warnings.catch_warnings(record=True) as warned:
-            rows = cursor.fetchall()
-
-        # a deprecation warning should have been emitted
-        expected_warnings = [
-            warning
-            for warning in warned
-            if issubclass(warning.category, DeprecationWarning)
-            and "v1beta1" in str(warning)
-        ]
-        self.assertEqual(len(expected_warnings), 1, "Deprecation warning not raised.")
-
-        # the default client was not used
-        mock_client.list_rows.assert_not_called()
-
-        # check the data returned
-        field_value = op.itemgetter(1)
-        sorted_row_data = [sorted(row.items(), key=field_value) for row in rows]
-        expected_row_data = [
-            [("foo", 1.1), ("bar", 1.2), ("baz", 1.3), ("quux", 1.4)],
-            [("foo", 2.1), ("bar", 2.2), ("baz", 2.3), ("quux", 2.4)],
-        ]
-
-        self.assertEqual(sorted_row_data, expected_row_data)
-
-    @unittest.skipIf(
-        bigquery_storage_v1 is None, "Requires `google-cloud-bigquery-storage`"
+        bigquery_storage is None, "Requires `google-cloud-bigquery-storage`"
     )
     def test_fetchall_w_bqstorage_client_fetch_no_rows(self):
         from google.cloud.bigquery import dbapi
 
         mock_client = self._mock_client(rows=[])
         mock_bqstorage_client = self._mock_bqstorage_client(stream_count=0)
+        mock_client._ensure_bqstorage_client.return_value = mock_bqstorage_client
 
         connection = dbapi.connect(
             client=mock_client, bqstorage_client=mock_bqstorage_client,
@@ -432,7 +359,7 @@ class TestCursor(unittest.TestCase):
         self.assertEqual(rows, [])
 
     @unittest.skipIf(
-        bigquery_storage_v1 is None, "Requires `google-cloud-bigquery-storage`"
+        bigquery_storage is None, "Requires `google-cloud-bigquery-storage`"
     )
     def test_fetchall_w_bqstorage_client_fetch_error_no_fallback(self):
         from google.cloud.bigquery import dbapi
@@ -440,7 +367,11 @@ class TestCursor(unittest.TestCase):
 
         row_data = [table.Row([1.1, 1.2], {"foo": 0, "bar": 1})]
 
+        def fake_ensure_bqstorage_client(bqstorage_client=None, **kwargs):
+            return bqstorage_client
+
         mock_client = self._mock_client(rows=row_data)
+        mock_client._ensure_bqstorage_client.side_effect = fake_ensure_bqstorage_client
         mock_bqstorage_client = self._mock_bqstorage_client(
             stream_count=1, rows=row_data,
         )
@@ -453,11 +384,61 @@ class TestCursor(unittest.TestCase):
         cursor = connection.cursor()
         cursor.execute("SELECT foo, bar FROM some_table")
 
-        with six.assertRaisesRegex(self, exceptions.Forbidden, "invalid credentials"):
+        with self.assertRaisesRegex(exceptions.Forbidden, "invalid credentials"):
             cursor.fetchall()
 
         # the default client was not used
         mock_client.list_rows.assert_not_called()
+
+    @unittest.skipIf(
+        bigquery_storage is None, "Requires `google-cloud-bigquery-storage`"
+    )
+    @unittest.skipIf(pyarrow is None, "Requires `pyarrow`")
+    def test_fetchall_w_bqstorage_client_no_arrow_compression(self):
+        from google.cloud.bigquery import dbapi
+        from google.cloud.bigquery import table
+
+        # Use unordered data to also test any non-determenistic key order in dicts.
+        row_data = [table.Row([1.2, 1.1], {"bar": 1, "foo": 0})]
+        bqstorage_streamed_rows = [{"bar": _to_pyarrow(1.2), "foo": _to_pyarrow(1.1)}]
+
+        def fake_ensure_bqstorage_client(bqstorage_client=None, **kwargs):
+            return bqstorage_client
+
+        mock_client = self._mock_client(rows=row_data)
+        mock_client._ensure_bqstorage_client.side_effect = fake_ensure_bqstorage_client
+        mock_bqstorage_client = self._mock_bqstorage_client(
+            stream_count=1, rows=bqstorage_streamed_rows,
+        )
+
+        connection = dbapi.connect(
+            client=mock_client, bqstorage_client=mock_bqstorage_client,
+        )
+        cursor = connection.cursor()
+        cursor.execute("SELECT foo, bar FROM some_table")
+
+        with mock.patch(
+            "google.cloud.bigquery.dbapi.cursor._ARROW_COMPRESSION_SUPPORT", new=False
+        ):
+            rows = cursor.fetchall()
+
+        mock_client.list_rows.assert_not_called()  # The default client was not used.
+
+        # Check the BQ Storage session config.
+        expected_session = bigquery_storage.ReadSession(
+            table="projects/P/datasets/DS/tables/T",
+            data_format=bigquery_storage.DataFormat.ARROW,
+        )
+        mock_bqstorage_client.create_read_session.assert_called_once_with(
+            parent="projects/P", read_session=expected_session, max_stream_count=1
+        )
+
+        # Check the data returned.
+        field_value = op.itemgetter(1)
+        sorted_row_data = [sorted(row.items(), key=field_value) for row in rows]
+        expected_row_data = [[("foo", 1.1), ("bar", 1.2)]]
+
+        self.assertEqual(sorted_row_data, expected_row_data)
 
     def test_execute_custom_job_id(self):
         from google.cloud.bigquery.dbapi import connect
@@ -641,18 +622,52 @@ class TestCursor(unittest.TestCase):
             (("test",), ("anothertest",)),
         )
         self.assertIsNone(cursor.description)
-        self.assertEqual(cursor.rowcount, 12)
+        self.assertEqual(cursor.rowcount, 24)  # 24 because 2 * 12 because cumulatve.
+
+    def test_executemany_empty(self):
+        from google.cloud.bigquery.dbapi import connect
+
+        connection = connect(self._mock_client(rows=[], num_dml_affected_rows=12))
+        cursor = connection.cursor()
+        cursor.executemany((), ())
+        self.assertIsNone(cursor.description)
+        self.assertEqual(cursor.rowcount, -1)
+
+    def test_is_iterable(self):
+        from google.cloud.bigquery import dbapi
+
+        connection = dbapi.connect(
+            self._mock_client(rows=[("hello", "there", 7), ("good", "bye", -3)])
+        )
+        cursor = connection.cursor()
+        cursor.execute("SELECT foo, bar, baz FROM hello_world WHERE baz < 42;")
+
+        rows_iter = iter(cursor)
+
+        row = next(rows_iter)
+        self.assertEqual(row, ("hello", "there", 7))
+        row = next(rows_iter)
+        self.assertEqual(row, ("good", "bye", -3))
+        self.assertRaises(StopIteration, next, rows_iter)
+
+        self.assertEqual(
+            list(cursor),
+            [],
+            "Iterating again over the same results should produce no rows.",
+        )
 
     def test__format_operation_w_dict(self):
         from google.cloud.bigquery.dbapi import cursor
 
-        formatted_operation = cursor._format_operation(
-            "SELECT %(somevalue)s, %(a `weird` one)s;",
+        parameter_types = {}
+        formatted_operation, parameter_types = cursor._format_operation(
+            "SELECT %(somevalue)s, %(a `weird` one:STRING)s;",
             {"somevalue": "hi", "a `weird` one": "world"},
         )
         self.assertEqual(
             formatted_operation, "SELECT @`somevalue`, @`a \\`weird\\` one`;"
         )
+        self.assertEqual(parameter_types, {"a `weird` one": "STRING"})
 
     def test__format_operation_w_wrong_dict(self):
         from google.cloud.bigquery import dbapi
@@ -665,10 +680,18 @@ class TestCursor(unittest.TestCase):
             {"somevalue-not-here": "hi", "othervalue": "world"},
         )
 
+    def test__format_operation_w_redundant_dict_key(self):
+        from google.cloud.bigquery.dbapi import cursor
+
+        formatted_operation, _ = cursor._format_operation(
+            "SELECT %(somevalue)s;", {"somevalue": "foo", "value-not-used": "bar"}
+        )
+        self.assertEqual(formatted_operation, "SELECT @`somevalue`;")
+
     def test__format_operation_w_sequence(self):
         from google.cloud.bigquery.dbapi import cursor
 
-        formatted_operation = cursor._format_operation(
+        formatted_operation, _ = cursor._format_operation(
             "SELECT %s, %s;", ("hello", "world")
         )
         self.assertEqual(formatted_operation, "SELECT ?, ?;")
@@ -683,3 +706,157 @@ class TestCursor(unittest.TestCase):
             "SELECT %s, %s;",
             ("hello",),
         )
+
+    def test__format_operation_w_too_long_sequence(self):
+        from google.cloud.bigquery import dbapi
+        from google.cloud.bigquery.dbapi import cursor
+
+        self.assertRaises(
+            dbapi.ProgrammingError,
+            cursor._format_operation,
+            "SELECT %s, %s;",
+            ("hello", "world", "everyone"),
+        )
+
+    def test__format_operation_w_empty_dict(self):
+        from google.cloud.bigquery.dbapi import cursor
+
+        formatted_operation, _ = cursor._format_operation("SELECT '%f'", {})
+        self.assertEqual(formatted_operation, "SELECT '%f'")
+
+    def test__format_operation_wo_params_single_percent(self):
+        from google.cloud.bigquery.dbapi import cursor
+
+        formatted_operation, _ = cursor._format_operation("SELECT '%'", {})
+        self.assertEqual(formatted_operation, "SELECT '%'")
+
+    def test__format_operation_wo_params_double_percents(self):
+        from google.cloud.bigquery.dbapi import cursor
+
+        formatted_operation, _ = cursor._format_operation("SELECT '%%'", {})
+        self.assertEqual(formatted_operation, "SELECT '%'")
+
+    def test__format_operation_unescaped_percent_w_dict_param(self):
+        from google.cloud.bigquery import dbapi
+        from google.cloud.bigquery.dbapi import cursor
+
+        self.assertRaises(
+            dbapi.ProgrammingError,
+            cursor._format_operation,
+            "SELECT %(foo)s, '100 %';",
+            {"foo": "bar"},
+        )
+
+    def test__format_operation_unescaped_percent_w_list_param(self):
+        from google.cloud.bigquery import dbapi
+        from google.cloud.bigquery.dbapi import cursor
+
+        self.assertRaises(
+            dbapi.ProgrammingError,
+            cursor._format_operation,
+            "SELECT %s, %s, '100 %';",
+            ["foo", "bar"],
+        )
+
+    def test__format_operation_no_placeholders(self):
+        from google.cloud.bigquery import dbapi
+        from google.cloud.bigquery.dbapi import cursor
+
+        self.assertRaises(
+            dbapi.ProgrammingError,
+            cursor._format_operation,
+            "SELECT 42",
+            ["foo", "bar"],
+        )
+
+
+@pytest.mark.parametrize(
+    "inp,expect",
+    [
+        ("", ("", None)),
+        ("values(%(foo)s, %(bar)s)", ("values(%(foo)s, %(bar)s)", {})),
+        (
+            "values('%%(oof:INT64)s', %(foo)s, %(bar)s)",
+            ("values('%%(oof:INT64)s', %(foo)s, %(bar)s)", {}),
+        ),
+        (
+            "values(%(foo:INT64)s, %(bar)s)",
+            ("values(%(foo)s, %(bar)s)", dict(foo="INT64")),
+        ),
+        (
+            "values('%%(oof:INT64)s, %(foo:INT64)s, %(foo)s)",
+            ("values('%%(oof:INT64)s, %(foo)s, %(foo)s)", dict(foo="INT64")),
+        ),
+        (
+            "values(%(foo:INT64)s, %(foo:INT64)s)",
+            ("values(%(foo)s, %(foo)s)", dict(foo="INT64")),
+        ),
+        (
+            "values(%(foo:INT64)s, %(bar:NUMERIC)s) 100 %",
+            ("values(%(foo)s, %(bar)s) 100 %", dict(foo="INT64", bar="NUMERIC")),
+        ),
+        (" %s %()s %(:int64)s ", (" %s %s %s ", [None, None, "int64"])),
+        (" %%s %s %()s %(:int64)s ", (" %%s %s %s %s ", [None, None, "int64"])),
+        (
+            "values(%%%(foo:INT64)s, %(bar)s)",
+            ("values(%%%(foo)s, %(bar)s)", dict(foo="INT64")),
+        ),
+        (
+            "values(%%%%(foo:INT64)s, %(bar)s)",
+            ("values(%%%%(foo:INT64)s, %(bar)s)", dict()),
+        ),
+        (
+            "values(%%%%%(foo:INT64)s, %(bar)s)",
+            ("values(%%%%%(foo)s, %(bar)s)", dict(foo="INT64")),
+        ),
+        (
+            "values(%%%%%(foo:struct<x string, y int64>)s, %(bar)s)",
+            ("values(%%%%%(foo)s, %(bar)s)", dict(foo="struct<x string, y int64>")),
+        ),
+        (
+            "values(%%%%%(foo:struct<x string(10), y int64>)s, %(bar)s)",
+            ("values(%%%%%(foo)s, %(bar)s)", dict(foo="struct<x string(10), y int64>")),
+        ),
+        (
+            "values(%(foo:struct<x string(10), y numeric(2, 9)>)s, %(bar)s)",
+            (
+                "values(%(foo)s, %(bar)s)",
+                dict(foo="struct<x string(10), y numeric(2, 9)>"),
+            ),
+        ),
+        (
+            "values(%(foo:struct<x string(10) , y numeric(2, 9)>)s, %(bar)s)",
+            (
+                "values(%(foo)s, %(bar)s)",
+                dict(foo="struct<x string(10) , y numeric(2, 9)>"),
+            ),
+        ),
+        (
+            "values(%(foo:string(10))s, %(bar)s)",
+            ("values(%(foo)s, %(bar)s)", dict(foo="string(10)")),
+        ),
+    ],
+)
+def test__extract_types(inp, expect):
+    from google.cloud.bigquery.dbapi.cursor import _extract_types as et
+
+    assert et(inp) == expect
+
+
+@pytest.mark.parametrize(
+    "match,inp",
+    [
+        (
+            "Conflicting types for foo: numeric and int64.",
+            " %(foo:numeric)s %(foo:int64)s ",
+        ),
+        (r"' %s %\(foo\)s ' mixes named and unamed parameters.", " %s %(foo)s "),
+        (r"' %\(foo\)s %s ' mixes named and unamed parameters.", " %(foo)s %s "),
+    ],
+)
+def test__extract_types_fail(match, inp):
+    from google.cloud.bigquery.dbapi.cursor import _extract_types as et
+    from google.cloud.bigquery.dbapi import exceptions
+
+    with pytest.raises(exceptions.ProgrammingError, match=match):
+        et(inp)

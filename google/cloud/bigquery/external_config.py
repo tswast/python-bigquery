@@ -27,6 +27,7 @@ from google.cloud.bigquery._helpers import _to_bytes
 from google.cloud.bigquery._helpers import _bytes_to_json
 from google.cloud.bigquery._helpers import _int_or_none
 from google.cloud.bigquery._helpers import _str_or_none
+from google.cloud.bigquery.format_options import ParquetOptions
 from google.cloud.bigquery.schema import SchemaField
 
 
@@ -52,6 +53,12 @@ class ExternalSourceFormat(object):
 
     DATASTORE_BACKUP = "DATASTORE_BACKUP"
     """Specifies datastore backup format"""
+
+    ORC = "ORC"
+    """Specifies ORC format."""
+
+    PARQUET = "PARQUET"
+    """Specifies Parquet format."""
 
     BIGTABLE = "BIGTABLE"
     """Specifies Bigtable format."""
@@ -149,7 +156,7 @@ class BigtableColumn(object):
     def type_(self, value):
         self._properties["type"] = value
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Build an API representation of this object.
 
         Returns:
@@ -159,7 +166,7 @@ class BigtableColumn(object):
         return copy.deepcopy(self._properties)
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "BigtableColumn":
         """Factory: construct a :class:`~.external_config.BigtableColumn`
         instance given its API representation.
 
@@ -251,7 +258,7 @@ class BigtableColumnFamily(object):
     def columns(self, value):
         self._properties["columns"] = [col.to_api_repr() for col in value]
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Build an API representation of this object.
 
         Returns:
@@ -261,7 +268,7 @@ class BigtableColumnFamily(object):
         return copy.deepcopy(self._properties)
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "BigtableColumnFamily":
         """Factory: construct a :class:`~.external_config.BigtableColumnFamily`
         instance given its API representation.
 
@@ -333,7 +340,7 @@ class BigtableOptions(object):
     def column_families(self, value):
         self._properties["columnFamilies"] = [cf.to_api_repr() for cf in value]
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Build an API representation of this object.
 
         Returns:
@@ -343,7 +350,7 @@ class BigtableOptions(object):
         return copy.deepcopy(self._properties)
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "BigtableOptions":
         """Factory: construct a :class:`~.external_config.BigtableOptions`
         instance given its API representation.
 
@@ -450,7 +457,7 @@ class CSVOptions(object):
     def skip_leading_rows(self, value):
         self._properties["skipLeadingRows"] = str(value)
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Build an API representation of this object.
 
         Returns:
@@ -459,7 +466,7 @@ class CSVOptions(object):
         return copy.deepcopy(self._properties)
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "CSVOptions":
         """Factory: construct a :class:`~.external_config.CSVOptions` instance
         given its API representation.
 
@@ -513,7 +520,7 @@ class GoogleSheetsOptions(object):
     def range(self, value):
         self._properties["range"] = value
 
-    def to_api_repr(self):
+    def to_api_repr(self) -> dict:
         """Build an API representation of this object.
 
         Returns:
@@ -522,7 +529,7 @@ class GoogleSheetsOptions(object):
         return copy.deepcopy(self._properties)
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "GoogleSheetsOptions":
         """Factory: construct a :class:`~.external_config.GoogleSheetsOptions`
         instance given its API representation.
 
@@ -540,7 +547,7 @@ class GoogleSheetsOptions(object):
         return config
 
 
-_OPTION_CLASSES = (BigtableOptions, CSVOptions, GoogleSheetsOptions)
+_OPTION_CLASSES = (BigtableOptions, CSVOptions, GoogleSheetsOptions, ParquetOptions)
 
 
 class HivePartitioningOptions(object):
@@ -586,7 +593,22 @@ class HivePartitioningOptions(object):
     def source_uri_prefix(self, value):
         self._properties["sourceUriPrefix"] = value
 
-    def to_api_repr(self):
+    @property
+    def require_partition_filter(self):
+        """Optional[bool]: If set to true, queries over the partitioned table require a
+        partition filter that can be used for partition elimination to be
+        specified.
+
+        See
+        https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#HivePartitioningOptions.FIELDS.mode
+        """
+        return self._properties.get("requirePartitionFilter")
+
+    @require_partition_filter.setter
+    def require_partition_filter(self, value):
+        self._properties["requirePartitionFilter"] = value
+
+    def to_api_repr(self) -> dict:
         """Build an API representation of this object.
 
         Returns:
@@ -595,7 +617,7 @@ class HivePartitioningOptions(object):
         return copy.deepcopy(self._properties)
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "HivePartitioningOptions":
         """Factory: construct a :class:`~.external_config.HivePartitioningOptions`
         instance given its API representation.
 
@@ -745,6 +767,23 @@ class ExternalConfig(object):
         prop = self._properties.get("schema", {})
         return [SchemaField.from_api_repr(field) for field in prop.get("fields", [])]
 
+    @property
+    def connection_id(self):
+        """Optional[str]: [Experimental] ID of a BigQuery Connection API
+        resource.
+
+        .. WARNING::
+
+           This feature is experimental. Pre-GA features may have limited
+           support, and changes to pre-GA features may not be compatible with
+           other pre-GA versions.
+        """
+        return self._properties.get("connectionId")
+
+    @connection_id.setter
+    def connection_id(self, value):
+        self._properties["connectionId"] = value
+
     @schema.setter
     def schema(self, value):
         prop = value
@@ -752,7 +791,26 @@ class ExternalConfig(object):
             prop = {"fields": [field.to_api_repr() for field in value]}
         self._properties["schema"] = prop
 
-    def to_api_repr(self):
+    @property
+    def parquet_options(self):
+        """Optional[google.cloud.bigquery.format_options.ParquetOptions]: Additional
+        properties to set if ``sourceFormat`` is set to PARQUET.
+
+        See:
+        https://cloud.google.com/bigquery/docs/reference/rest/v2/tables#ExternalDataConfiguration.FIELDS.parquet_options
+        """
+        if self.source_format != ExternalSourceFormat.PARQUET:
+            return None
+        return self._options
+
+    @parquet_options.setter
+    def parquet_options(self, value):
+        if self.source_format != ExternalSourceFormat.PARQUET:
+            msg = f"Cannot set Parquet options, source format is {self.source_format}"
+            raise TypeError(msg)
+        self._options = value
+
+    def to_api_repr(self) -> dict:
         """Build an API representation of this object.
 
         Returns:
@@ -767,7 +825,7 @@ class ExternalConfig(object):
         return config
 
     @classmethod
-    def from_api_repr(cls, resource):
+    def from_api_repr(cls, resource: dict) -> "ExternalConfig":
         """Factory: construct an :class:`~.external_config.ExternalConfig`
         instance given its API representation.
 

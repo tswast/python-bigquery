@@ -58,6 +58,15 @@ Create an empty table with the
    :start-after: [START bigquery_create_table]
    :end-before: [END bigquery_create_table]
 
+Create a clustered table with the
+:func:`~google.cloud.bigquery.client.Client.create_table` method:
+
+.. literalinclude:: ../samples/create_table_clustered.py
+   :language: python
+   :dedent: 4
+   :start-after: [START bigquery_create_table_clustered]
+   :end-before: [END bigquery_create_table_clustered]
+
 Create an integer range partitioned table with the
 :func:`~google.cloud.bigquery.client.Client.create_table` method:
 
@@ -75,6 +84,23 @@ Load table data from a file with the
    :dedent: 4
    :start-after: [START bigquery_load_from_file]
    :end-before: [END bigquery_load_from_file]
+
+Creating a clustered table from a query result:
+
+.. literalinclude:: ../samples/client_query_destination_table_clustered.py
+   :language: python
+   :dedent: 4
+   :start-after: [START bigquery_query_clustered_table]
+   :end-before: [END bigquery_query_clustered_table]
+
+Creating a clustered table when you load data with the
+:func:`~google.cloud.bigquery.client.Client.load_table_from_uri` method:
+
+.. literalinclude:: ../samples/load_table_clustered.py
+   :language: python
+   :dedent: 4
+   :start-after: [START bigquery_load_table_clustered]
+   :end-before: [END bigquery_load_table_clustered]
 
 Load a CSV file from Cloud Storage with the
 :func:`~google.cloud.bigquery.client.Client.load_table_from_uri` method:

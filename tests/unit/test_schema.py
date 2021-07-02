@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from google.cloud.bigquery.schema import PolicyTagList
 import unittest
 
 import mock
+import pytest
 
 
 class TestSchemaField(unittest.TestCase):
@@ -35,19 +37,20 @@ class TestSchemaField(unittest.TestCase):
 
     def test_constructor_defaults(self):
         field = self._make_one("test", "STRING")
-        self.assertEqual(field._name, "test")
-        self.assertEqual(field._field_type, "STRING")
-        self.assertEqual(field._mode, "NULLABLE")
-        self.assertIsNone(field._description)
-        self.assertEqual(field._fields, ())
+        self.assertEqual(field.name, "test")
+        self.assertEqual(field.field_type, "STRING")
+        self.assertEqual(field.mode, "NULLABLE")
+        self.assertIsNone(field.description)
+        self.assertEqual(field.fields, ())
+        self.assertEqual(field.policy_tags, PolicyTagList())
 
     def test_constructor_explicit(self):
         field = self._make_one("test", "STRING", mode="REQUIRED", description="Testing")
-        self.assertEqual(field._name, "test")
-        self.assertEqual(field._field_type, "STRING")
-        self.assertEqual(field._mode, "REQUIRED")
-        self.assertEqual(field._description, "Testing")
-        self.assertEqual(field._fields, ())
+        self.assertEqual(field.name, "test")
+        self.assertEqual(field.field_type, "STRING")
+        self.assertEqual(field.mode, "REQUIRED")
+        self.assertEqual(field.description, "Testing")
+        self.assertEqual(field.fields, ())
 
     def test_constructor_subfields(self):
         sub_field1 = self._make_one("area_code", "STRING")
@@ -55,13 +58,13 @@ class TestSchemaField(unittest.TestCase):
         field = self._make_one(
             "phone_number", "RECORD", fields=[sub_field1, sub_field2]
         )
-        self.assertEqual(field._name, "phone_number")
-        self.assertEqual(field._field_type, "RECORD")
-        self.assertEqual(field._mode, "NULLABLE")
-        self.assertIsNone(field._description)
-        self.assertEqual(len(field._fields), 2)
-        self.assertIs(field._fields[0], sub_field1)
-        self.assertIs(field._fields[1], sub_field2)
+        self.assertEqual(field.name, "phone_number")
+        self.assertEqual(field.field_type, "RECORD")
+        self.assertEqual(field.mode, "NULLABLE")
+        self.assertIsNone(field.description)
+        self.assertEqual(len(field.fields), 2)
+        self.assertEqual(field.fields[0], sub_field1)
+        self.assertEqual(field.fields[1], sub_field2)
 
     def test_constructor_with_policy_tags(self):
         from google.cloud.bigquery.schema import PolicyTagList
@@ -70,12 +73,12 @@ class TestSchemaField(unittest.TestCase):
         field = self._make_one(
             "test", "STRING", mode="REQUIRED", description="Testing", policy_tags=policy
         )
-        self.assertEqual(field._name, "test")
-        self.assertEqual(field._field_type, "STRING")
-        self.assertEqual(field._mode, "REQUIRED")
-        self.assertEqual(field._description, "Testing")
-        self.assertEqual(field._fields, ())
-        self.assertEqual(field._policy_tags, policy)
+        self.assertEqual(field.name, "test")
+        self.assertEqual(field.field_type, "STRING")
+        self.assertEqual(field.mode, "REQUIRED")
+        self.assertEqual(field.description, "Testing")
+        self.assertEqual(field.fields, ())
+        self.assertEqual(field.policy_tags, policy)
 
     def test_to_api_repr(self):
         from google.cloud.bigquery.schema import PolicyTagList
@@ -92,7 +95,6 @@ class TestSchemaField(unittest.TestCase):
                 "mode": "NULLABLE",
                 "name": "foo",
                 "type": "INTEGER",
-                "description": None,
                 "policyTags": {"names": ["foo", "bar"]},
             },
         )
@@ -109,13 +111,12 @@ class TestSchemaField(unittest.TestCase):
                             "mode": "NULLABLE",
                             "name": "bar",
                             "type": "INTEGER",
-                            "description": None,
+                            "policyTags": {"names": []},
                         }
                     ],
                     "mode": "REQUIRED",
                     "name": "foo",
                     "type": record_type,
-                    "description": None,
                 },
             )
 
@@ -168,17 +169,17 @@ class TestSchemaField(unittest.TestCase):
     def test_name_property(self):
         name = "lemon-ness"
         schema_field = self._make_one(name, "INTEGER")
-        self.assertIs(schema_field.name, name)
+        self.assertEqual(schema_field.name, name)
 
     def test_field_type_property(self):
         field_type = "BOOLEAN"
         schema_field = self._make_one("whether", field_type)
-        self.assertIs(schema_field.field_type, field_type)
+        self.assertEqual(schema_field.field_type, field_type)
 
     def test_mode_property(self):
         mode = "REPEATED"
         schema_field = self._make_one("again", "FLOAT", mode=mode)
-        self.assertIs(schema_field.mode, mode)
+        self.assertEqual(schema_field.mode, mode)
 
     def test_is_nullable(self):
         mode = "NULLABLE"
@@ -193,28 +194,28 @@ class TestSchemaField(unittest.TestCase):
     def test_description_property(self):
         description = "It holds some data."
         schema_field = self._make_one("do", "TIMESTAMP", description=description)
-        self.assertIs(schema_field.description, description)
+        self.assertEqual(schema_field.description, description)
 
     def test_fields_property(self):
         sub_field1 = self._make_one("one", "STRING")
         sub_field2 = self._make_one("fish", "INTEGER")
         fields = (sub_field1, sub_field2)
         schema_field = self._make_one("boat", "RECORD", fields=fields)
-        self.assertIs(schema_field.fields, fields)
+        self.assertEqual(schema_field.fields, fields)
 
     def test_to_standard_sql_simple_type(self):
         sql_type = self._get_standard_sql_data_type_class()
         examples = (
             # a few legacy types
-            ("INTEGER", sql_type.INT64),
-            ("FLOAT", sql_type.FLOAT64),
-            ("BOOLEAN", sql_type.BOOL),
-            ("DATETIME", sql_type.DATETIME),
+            ("INTEGER", sql_type.TypeKind.INT64),
+            ("FLOAT", sql_type.TypeKind.FLOAT64),
+            ("BOOLEAN", sql_type.TypeKind.BOOL),
+            ("DATETIME", sql_type.TypeKind.DATETIME),
             # a few standard types
-            ("INT64", sql_type.INT64),
-            ("FLOAT64", sql_type.FLOAT64),
-            ("BOOL", sql_type.BOOL),
-            ("GEOGRAPHY", sql_type.GEOGRAPHY),
+            ("INT64", sql_type.TypeKind.INT64),
+            ("FLOAT64", sql_type.TypeKind.FLOAT64),
+            ("BOOL", sql_type.TypeKind.BOOL),
+            ("GEOGRAPHY", sql_type.TypeKind.GEOGRAPHY),
         )
         for legacy_type, standard_type in examples:
             field = self._make_one("some_field", legacy_type)
@@ -258,26 +259,26 @@ class TestSchemaField(unittest.TestCase):
 
         # level 2 fields
         sub_sub_field_date = types.StandardSqlField(
-            name="date_field", type=sql_type(type_kind=sql_type.DATE)
+            name="date_field", type=sql_type(type_kind=sql_type.TypeKind.DATE)
         )
         sub_sub_field_time = types.StandardSqlField(
-            name="time_field", type=sql_type(type_kind=sql_type.TIME)
+            name="time_field", type=sql_type(type_kind=sql_type.TypeKind.TIME)
         )
 
         # level 1 fields
         sub_field_struct = types.StandardSqlField(
-            name="last_used", type=sql_type(type_kind=sql_type.STRUCT)
+            name="last_used", type=sql_type(type_kind=sql_type.TypeKind.STRUCT)
         )
         sub_field_struct.type.struct_type.fields.extend(
             [sub_sub_field_date, sub_sub_field_time]
         )
         sub_field_bytes = types.StandardSqlField(
-            name="image_content", type=sql_type(type_kind=sql_type.BYTES)
+            name="image_content", type=sql_type(type_kind=sql_type.TypeKind.BYTES)
         )
 
         # level 0 (top level)
         expected_result = types.StandardSqlField(
-            name="image_usage", type=sql_type(type_kind=sql_type.STRUCT)
+            name="image_usage", type=sql_type(type_kind=sql_type.TypeKind.STRUCT)
         )
         expected_result.type.struct_type.fields.extend(
             [sub_field_bytes, sub_field_struct]
@@ -304,8 +305,8 @@ class TestSchemaField(unittest.TestCase):
         sql_type = self._get_standard_sql_data_type_class()
 
         # construct expected result object
-        expected_sql_type = sql_type(type_kind=sql_type.ARRAY)
-        expected_sql_type.array_element_type.type_kind = sql_type.INT64
+        expected_sql_type = sql_type(type_kind=sql_type.TypeKind.ARRAY)
+        expected_sql_type.array_element_type.type_kind = sql_type.TypeKind.INT64
         expected_result = types.StandardSqlField(
             name="valid_numbers", type=expected_sql_type
         )
@@ -323,19 +324,19 @@ class TestSchemaField(unittest.TestCase):
 
         # define person STRUCT
         name_field = types.StandardSqlField(
-            name="name", type=sql_type(type_kind=sql_type.STRING)
+            name="name", type=sql_type(type_kind=sql_type.TypeKind.STRING)
         )
         age_field = types.StandardSqlField(
-            name="age", type=sql_type(type_kind=sql_type.INT64)
+            name="age", type=sql_type(type_kind=sql_type.TypeKind.INT64)
         )
         person_struct = types.StandardSqlField(
-            name="person_info", type=sql_type(type_kind=sql_type.STRUCT)
+            name="person_info", type=sql_type(type_kind=sql_type.TypeKind.STRUCT)
         )
         person_struct.type.struct_type.fields.extend([name_field, age_field])
 
         # define expected result - an ARRAY of person structs
         expected_sql_type = sql_type(
-            type_kind=sql_type.ARRAY, array_element_type=person_struct.type
+            type_kind=sql_type.TypeKind.ARRAY, array_element_type=person_struct.type
         )
         expected_result = types.StandardSqlField(
             name="known_people", type=expected_sql_type
@@ -358,7 +359,9 @@ class TestSchemaField(unittest.TestCase):
         standard_field = field.to_standard_sql()
 
         self.assertEqual(standard_field.name, "weird_field")
-        self.assertEqual(standard_field.type.type_kind, sql_type.TYPE_KIND_UNSPECIFIED)
+        self.assertEqual(
+            standard_field.type.type_kind, sql_type.TypeKind.TYPE_KIND_UNSPECIFIED
+        )
 
     def test___eq___wrong_type(self):
         field = self._make_one("test", "STRING")
@@ -410,6 +413,23 @@ class TestSchemaField(unittest.TestCase):
         other = self._make_one("test", "RECORD", fields=[sub1, sub2])
         self.assertEqual(field, other)
 
+    def test___eq___hit_w_policy_tags(self):
+        field = self._make_one(
+            "test",
+            "STRING",
+            mode="REQUIRED",
+            description="Testing",
+            policy_tags=PolicyTagList(names=["foo", "bar"]),
+        )
+        other = self._make_one(
+            "test",
+            "STRING",
+            mode="REQUIRED",
+            description="Testing",
+            policy_tags=PolicyTagList(names=["bar", "foo"]),
+        )
+        self.assertEqual(field, other)  # Policy tags order does not matter.
+
     def test___ne___wrong_type(self):
         field = self._make_one("toast", "INTEGER")
         other = object()
@@ -432,6 +452,23 @@ class TestSchemaField(unittest.TestCase):
         )
         self.assertNotEqual(field1, field2)
 
+    def test___ne___different_policy_tags(self):
+        field = self._make_one(
+            "test",
+            "STRING",
+            mode="REQUIRED",
+            description="Testing",
+            policy_tags=PolicyTagList(names=["foo", "bar"]),
+        )
+        other = self._make_one(
+            "test",
+            "STRING",
+            mode="REQUIRED",
+            description="Testing",
+            policy_tags=PolicyTagList(names=["foo", "baz"]),
+        )
+        self.assertNotEqual(field, other)
+
     def test___hash__set_equality(self):
         sub1 = self._make_one("sub1", "STRING")
         sub2 = self._make_one("sub2", "STRING")
@@ -452,7 +489,7 @@ class TestSchemaField(unittest.TestCase):
 
     def test___repr__(self):
         field1 = self._make_one("field1", "STRING")
-        expected = "SchemaField('field1', 'STRING', 'NULLABLE', None, (), None)"
+        expected = "SchemaField('field1', 'STRING', 'NULLABLE', None, (), ())"
         self.assertEqual(repr(field1), expected)
 
 
@@ -535,12 +572,17 @@ class Test_build_schema_resource(unittest.TestCase, _SchemaBase):
                 "name": "full_name",
                 "type": "STRING",
                 "mode": "REQUIRED",
-                "description": None,
+                "policyTags": {"names": []},
             },
         )
         self.assertEqual(
             resource[1],
-            {"name": "age", "type": "INTEGER", "mode": "REQUIRED", "description": None},
+            {
+                "name": "age",
+                "type": "INTEGER",
+                "mode": "REQUIRED",
+                "policyTags": {"names": []},
+            },
         )
 
     def test_w_description(self):
@@ -550,7 +592,13 @@ class Test_build_schema_resource(unittest.TestCase, _SchemaBase):
         full_name = SchemaField(
             "full_name", "STRING", mode="REQUIRED", description=DESCRIPTION
         )
-        age = SchemaField("age", "INTEGER", mode="REQUIRED")
+        age = SchemaField(
+            "age",
+            "INTEGER",
+            mode="REQUIRED",
+            # Explicitly unset description.
+            description=None,
+        )
         resource = self._call_fut([full_name, age])
         self.assertEqual(len(resource), 2)
         self.assertEqual(
@@ -560,11 +608,18 @@ class Test_build_schema_resource(unittest.TestCase, _SchemaBase):
                 "type": "STRING",
                 "mode": "REQUIRED",
                 "description": DESCRIPTION,
+                "policyTags": {"names": []},
             },
         )
         self.assertEqual(
             resource[1],
-            {"name": "age", "type": "INTEGER", "mode": "REQUIRED", "description": None},
+            {
+                "name": "age",
+                "type": "INTEGER",
+                "mode": "REQUIRED",
+                "description": None,
+                "policyTags": {"names": []},
+            },
         )
 
     def test_w_subfields(self):
@@ -584,7 +639,7 @@ class Test_build_schema_resource(unittest.TestCase, _SchemaBase):
                 "name": "full_name",
                 "type": "STRING",
                 "mode": "REQUIRED",
-                "description": None,
+                "policyTags": {"names": []},
             },
         )
         self.assertEqual(
@@ -593,19 +648,18 @@ class Test_build_schema_resource(unittest.TestCase, _SchemaBase):
                 "name": "phone",
                 "type": "RECORD",
                 "mode": "REPEATED",
-                "description": None,
                 "fields": [
                     {
                         "name": "type",
                         "type": "STRING",
                         "mode": "REQUIRED",
-                        "description": None,
+                        "policyTags": {"names": []},
                     },
                     {
                         "name": "number",
                         "type": "STRING",
                         "mode": "REQUIRED",
-                        "description": None,
+                        "policyTags": {"names": []},
                     },
                 ],
             },
@@ -740,3 +794,165 @@ class TestPolicyTags(unittest.TestCase):
         set_one = {policy1}
         set_two = {policy2}
         self.assertNotEqual(set_one, set_two)
+
+
+@pytest.mark.parametrize(
+    "api,expect,key2",
+    [
+        (
+            dict(name="n", type="NUMERIC"),
+            ("n", "NUMERIC", None, None, None),
+            ("n", "NUMERIC"),
+        ),
+        (
+            dict(name="n", type="NUMERIC", precision=9),
+            ("n", "NUMERIC", 9, None, None),
+            ("n", "NUMERIC(9)"),
+        ),
+        (
+            dict(name="n", type="NUMERIC", precision=9, scale=2),
+            ("n", "NUMERIC", 9, 2, None),
+            ("n", "NUMERIC(9, 2)"),
+        ),
+        (
+            dict(name="n", type="BIGNUMERIC"),
+            ("n", "BIGNUMERIC", None, None, None),
+            ("n", "BIGNUMERIC"),
+        ),
+        (
+            dict(name="n", type="BIGNUMERIC", precision=40),
+            ("n", "BIGNUMERIC", 40, None, None),
+            ("n", "BIGNUMERIC(40)"),
+        ),
+        (
+            dict(name="n", type="BIGNUMERIC", precision=40, scale=2),
+            ("n", "BIGNUMERIC", 40, 2, None),
+            ("n", "BIGNUMERIC(40, 2)"),
+        ),
+        (
+            dict(name="n", type="STRING"),
+            ("n", "STRING", None, None, None),
+            ("n", "STRING"),
+        ),
+        (
+            dict(name="n", type="STRING", maxLength=9),
+            ("n", "STRING", None, None, 9),
+            ("n", "STRING(9)"),
+        ),
+        (
+            dict(name="n", type="BYTES"),
+            ("n", "BYTES", None, None, None),
+            ("n", "BYTES"),
+        ),
+        (
+            dict(name="n", type="BYTES", maxLength=9),
+            ("n", "BYTES", None, None, 9),
+            ("n", "BYTES(9)"),
+        ),
+    ],
+)
+def test_from_api_repr_parameterized(api, expect, key2):
+    from google.cloud.bigquery.schema import SchemaField
+
+    field = SchemaField.from_api_repr(api)
+
+    assert (
+        field.name,
+        field.field_type,
+        field.precision,
+        field.scale,
+        field.max_length,
+    ) == expect
+
+    assert field._key()[:2] == key2
+
+
+@pytest.mark.parametrize(
+    "field,api",
+    [
+        (
+            dict(name="n", field_type="NUMERIC"),
+            dict(name="n", type="NUMERIC", mode="NULLABLE", policyTags={"names": []}),
+        ),
+        (
+            dict(name="n", field_type="NUMERIC", precision=9),
+            dict(
+                name="n",
+                type="NUMERIC",
+                mode="NULLABLE",
+                precision=9,
+                policyTags={"names": []},
+            ),
+        ),
+        (
+            dict(name="n", field_type="NUMERIC", precision=9, scale=2),
+            dict(
+                name="n",
+                type="NUMERIC",
+                mode="NULLABLE",
+                precision=9,
+                scale=2,
+                policyTags={"names": []},
+            ),
+        ),
+        (
+            dict(name="n", field_type="BIGNUMERIC"),
+            dict(
+                name="n", type="BIGNUMERIC", mode="NULLABLE", policyTags={"names": []}
+            ),
+        ),
+        (
+            dict(name="n", field_type="BIGNUMERIC", precision=40),
+            dict(
+                name="n",
+                type="BIGNUMERIC",
+                mode="NULLABLE",
+                precision=40,
+                policyTags={"names": []},
+            ),
+        ),
+        (
+            dict(name="n", field_type="BIGNUMERIC", precision=40, scale=2),
+            dict(
+                name="n",
+                type="BIGNUMERIC",
+                mode="NULLABLE",
+                precision=40,
+                scale=2,
+                policyTags={"names": []},
+            ),
+        ),
+        (
+            dict(name="n", field_type="STRING"),
+            dict(name="n", type="STRING", mode="NULLABLE", policyTags={"names": []}),
+        ),
+        (
+            dict(name="n", field_type="STRING", max_length=9),
+            dict(
+                name="n",
+                type="STRING",
+                mode="NULLABLE",
+                maxLength=9,
+                policyTags={"names": []},
+            ),
+        ),
+        (
+            dict(name="n", field_type="BYTES"),
+            dict(name="n", type="BYTES", mode="NULLABLE", policyTags={"names": []}),
+        ),
+        (
+            dict(name="n", field_type="BYTES", max_length=9),
+            dict(
+                name="n",
+                type="BYTES",
+                mode="NULLABLE",
+                maxLength=9,
+                policyTags={"names": []},
+            ),
+        ),
+    ],
+)
+def test_to_api_repr_parameterized(field, api):
+    from google.cloud.bigquery.schema import SchemaField
+
+    assert SchemaField(**field).to_api_repr() == api

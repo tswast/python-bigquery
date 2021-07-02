@@ -17,15 +17,10 @@
 import concurrent.futures
 import functools
 import logging
+import queue
 import warnings
 
-import six
-from six.moves import queue
-
-try:
-    from google.cloud import bigquery_storage_v1
-except ImportError:  # pragma: NO COVER
-    bigquery_storage_v1 = None
+from packaging import version
 
 try:
     import pandas
@@ -38,6 +33,14 @@ try:
 except ImportError:  # pragma: NO COVER
     pyarrow = None
 
+try:
+    from google.cloud.bigquery_storage import ArrowSerializationOptions
+except ImportError:
+    _ARROW_COMPRESSION_SUPPORT = False
+else:
+    # Having BQ Storage available implies that pyarrow >=1.0.0 is available, too.
+    _ARROW_COMPRESSION_SUPPORT = True
+
 from google.cloud.bigquery import schema
 
 
@@ -49,6 +52,8 @@ _NO_BQSTORAGE_ERROR = (
 )
 
 _PROGRESS_INTERVAL = 0.2  # Maximum time between download status checks, in seconds.
+
+_MAX_QUEUE_SIZE_DEFAULT = object()  # max queue size sentinel for BQ Storage downloads
 
 _PANDAS_DTYPE_TO_BQ = {
     "bool": "BOOLEAN",
@@ -84,6 +89,10 @@ def pyarrow_datetime():
 
 def pyarrow_numeric():
     return pyarrow.decimal128(38, 9)
+
+
+def pyarrow_bignumeric():
+    return pyarrow.decimal256(76, 38)
 
 
 def pyarrow_time():
@@ -134,14 +143,23 @@ if pyarrow:
         pyarrow.date64().id: "DATETIME",  # because millisecond resolution
         pyarrow.binary().id: "BYTES",
         pyarrow.string().id: "STRING",  # also alias for pyarrow.utf8()
+        # The exact scale and precision don't matter, see below.
         pyarrow.decimal128(38, scale=9).id: "NUMERIC",
-        # The exact decimal's scale and precision are not important, as only
-        # the type ID matters, and it's the same for all decimal128 instances.
     }
+
+    if version.parse(pyarrow.__version__) >= version.parse("3.0.0"):
+        BQ_TO_ARROW_SCALARS["BIGNUMERIC"] = pyarrow_bignumeric
+        # The exact decimal's scale and precision are not important, as only
+        # the type ID matters, and it's the same for all decimal256 instances.
+        ARROW_SCALAR_IDS_TO_BQ[pyarrow.decimal256(76, scale=38).id] = "BIGNUMERIC"
+        _BIGNUMERIC_SUPPORT = True
+    else:
+        _BIGNUMERIC_SUPPORT = False
 
 else:  # pragma: NO COVER
     BQ_TO_ARROW_SCALARS = {}  # pragma: NO COVER
     ARROW_SCALAR_IDS_TO_BQ = {}  # pragma: NO_COVER
+    _BIGNUMERIC_SUPPORT = False  # pragma: NO COVER
 
 
 def bq_to_arrow_struct_data_type(field):
@@ -287,13 +305,6 @@ def dataframe_to_bq_schema(dataframe, bq_schema):
     """
     if bq_schema:
         bq_schema = schema._to_schema_fields(bq_schema)
-        for field in bq_schema:
-            if field.field_type in schema._STRUCT_TYPES:
-                raise ValueError(
-                    "Uploading dataframes with struct (record) column types "
-                    "is not supported. See: "
-                    "https://github.com/googleapis/google-cloud-python/issues/8191"
-                )
         bq_schema_index = {field.name: field for field in bq_schema}
         bq_schema_unused = set(bq_schema_index.keys())
     else:
@@ -362,6 +373,7 @@ def augment_schema(dataframe, current_bq_schema):
     Returns:
         Optional[Sequence[google.cloud.bigquery.schema.SchemaField]]
     """
+    # pytype: disable=attribute-error
     augmented_schema = []
     unknown_type_fields = []
 
@@ -395,6 +407,7 @@ def augment_schema(dataframe, current_bq_schema):
         return None
 
     return augmented_schema
+    # pytype: enable=attribute-error
 
 
 def dataframe_to_arrow(dataframe, bq_schema):
@@ -486,7 +499,7 @@ def dataframe_to_parquet(dataframe, bq_schema, filepath, parquet_compression="SN
     pyarrow.parquet.write_table(arrow_table, filepath, compression=parquet_compression)
 
 
-def _tabledata_list_page_to_arrow(page, column_names, arrow_types):
+def _row_iterator_page_to_arrow(page, column_names, arrow_types):
     # Iterate over the page to force the API request to get the page data.
     try:
         next(iter(page))
@@ -502,8 +515,8 @@ def _tabledata_list_page_to_arrow(page, column_names, arrow_types):
     return pyarrow.RecordBatch.from_arrays(arrays, names=column_names)
 
 
-def download_arrow_tabledata_list(pages, bq_schema):
-    """Use tabledata.list to construct an iterable of RecordBatches.
+def download_arrow_row_iterator(pages, bq_schema):
+    """Use HTTP JSON RowIterator to construct an iterable of RecordBatches.
 
     Args:
         pages (Iterator[:class:`google.api_core.page_iterator.Page`]):
@@ -522,10 +535,10 @@ def download_arrow_tabledata_list(pages, bq_schema):
     arrow_types = [bq_to_arrow_data_type(field) for field in bq_schema]
 
     for page in pages:
-        yield _tabledata_list_page_to_arrow(page, column_names, arrow_types)
+        yield _row_iterator_page_to_arrow(page, column_names, arrow_types)
 
 
-def _tabledata_list_page_to_dataframe(page, column_names, dtypes):
+def _row_iterator_page_to_dataframe(page, column_names, dtypes):
     # Iterate over the page to force the API request to get the page data.
     try:
         next(iter(page))
@@ -540,8 +553,8 @@ def _tabledata_list_page_to_dataframe(page, column_names, dtypes):
     return pandas.DataFrame(columns, columns=column_names)
 
 
-def download_dataframe_tabledata_list(pages, bq_schema, dtypes):
-    """Use (slower, but free) tabledata.list to construct a DataFrame.
+def download_dataframe_row_iterator(pages, bq_schema, dtypes):
+    """Use HTTP JSON RowIterator to construct a DataFrame.
 
     Args:
         pages (Iterator[:class:`google.api_core.page_iterator.Page`]):
@@ -561,7 +574,7 @@ def download_dataframe_tabledata_list(pages, bq_schema, dtypes):
     bq_schema = schema._to_schema_fields(bq_schema)
     column_names = [field.name for field in bq_schema]
     for page in pages:
-        yield _tabledata_list_page_to_dataframe(page, column_names, dtypes)
+        yield _row_iterator_page_to_dataframe(page, column_names, dtypes)
 
 
 def _bqstorage_page_to_arrow(page):
@@ -577,19 +590,7 @@ def _bqstorage_page_to_dataframe(column_names, dtypes, page):
 def _download_table_bqstorage_stream(
     download_state, bqstorage_client, session, stream, worker_queue, page_to_item
 ):
-    # Passing a BQ Storage client in implies that the BigQuery Storage library
-    # is available and can be imported.
-    from google.cloud import bigquery_storage_v1beta1
-
-    # We want to preserve comaptibility with the v1beta1 BQ Storage clients,
-    # thus adjust constructing the rowstream if needed.
-    # The assumption is that the caller provides a BQ Storage `session` that is
-    # compatible with the version of the BQ Storage client passed in.
-    if isinstance(bqstorage_client, bigquery_storage_v1beta1.BigQueryStorageClient):
-        position = bigquery_storage_v1beta1.types.StreamPosition(stream=stream)
-        rowstream = bqstorage_client.read_rows(position).rows(session)
-    else:
-        rowstream = bqstorage_client.read_rows(stream.name).rows(session)
+    rowstream = bqstorage_client.read_rows(stream.name).rows(session)
 
     for page in rowstream.pages:
         if download_state.done:
@@ -619,13 +620,13 @@ def _download_table_bqstorage(
     preserve_order=False,
     selected_fields=None,
     page_to_item=None,
+    max_queue_size=_MAX_QUEUE_SIZE_DEFAULT,
 ):
     """Use (faster, but billable) BQ Storage API to construct DataFrame."""
 
     # Passing a BQ Storage client in implies that the BigQuery Storage library
     # is available and can be imported.
-    from google.cloud import bigquery_storage_v1
-    from google.cloud import bigquery_storage_v1beta1
+    from google.cloud import bigquery_storage
 
     if "$" in table.table_id:
         raise ValueError(
@@ -636,41 +637,23 @@ def _download_table_bqstorage(
 
     requested_streams = 1 if preserve_order else 0
 
-    # We want to preserve comaptibility with the v1beta1 BQ Storage clients,
-    # thus adjust the session creation if needed.
-    if isinstance(bqstorage_client, bigquery_storage_v1beta1.BigQueryStorageClient):
-        warnings.warn(
-            "Support for BigQuery Storage v1beta1 clients is deprecated, please "
-            "consider upgrading the client to BigQuery Storage v1 stable version.",
-            category=DeprecationWarning,
-        )
-        read_options = bigquery_storage_v1beta1.types.TableReadOptions()
+    requested_session = bigquery_storage.types.ReadSession(
+        table=table.to_bqstorage(), data_format=bigquery_storage.types.DataFormat.ARROW
+    )
+    if selected_fields is not None:
+        for field in selected_fields:
+            requested_session.read_options.selected_fields.append(field.name)
 
-        if selected_fields is not None:
-            for field in selected_fields:
-                read_options.selected_fields.append(field.name)
+    if _ARROW_COMPRESSION_SUPPORT:
+        requested_session.read_options.arrow_serialization_options.buffer_compression = (
+            ArrowSerializationOptions.CompressionCodec.LZ4_FRAME
+        )
 
-        session = bqstorage_client.create_read_session(
-            table.to_bqstorage(v1beta1=True),
-            "projects/{}".format(project_id),
-            format_=bigquery_storage_v1beta1.enums.DataFormat.ARROW,
-            read_options=read_options,
-            requested_streams=requested_streams,
-        )
-    else:
-        requested_session = bigquery_storage_v1.types.ReadSession(
-            table=table.to_bqstorage(),
-            data_format=bigquery_storage_v1.enums.DataFormat.ARROW,
-        )
-        if selected_fields is not None:
-            for field in selected_fields:
-                requested_session.read_options.selected_fields.append(field.name)
-
-        session = bqstorage_client.create_read_session(
-            parent="projects/{}".format(project_id),
-            read_session=requested_session,
-            max_stream_count=requested_streams,
-        )
+    session = bqstorage_client.create_read_session(
+        parent="projects/{}".format(project_id),
+        read_session=requested_session,
+        max_stream_count=requested_streams,
+    )
 
     _LOGGER.debug(
         "Started reading table '{}.{}.{}' with BQ Storage API session '{}'.".format(
@@ -689,7 +672,17 @@ def _download_table_bqstorage(
     download_state = _DownloadState()
 
     # Create a queue to collect frames as they are created in each thread.
-    worker_queue = queue.Queue()
+    #
+    # The queue needs to be bounded by default, because if the user code processes the
+    # fetched result pages too slowly, while at the same time new pages are rapidly being
+    # fetched from the server, the queue can grow to the point where the process runs
+    # out of memory.
+    if max_queue_size is _MAX_QUEUE_SIZE_DEFAULT:
+        max_queue_size = total_streams
+    elif max_queue_size is None:
+        max_queue_size = 0  # unbounded
+
+    worker_queue = queue.Queue(maxsize=max_queue_size)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=total_streams) as pool:
         try:
@@ -730,15 +723,12 @@ def _download_table_bqstorage(
                     continue
 
             # Return any remaining values after the workers finished.
-            while not worker_queue.empty():  # pragma: NO COVER
+            while True:  # pragma: NO COVER
                 try:
-                    # Include a timeout because even though the queue is
-                    # non-empty, it doesn't guarantee that a subsequent call to
-                    # get() will not block.
-                    frame = worker_queue.get(timeout=_PROGRESS_INTERVAL)
+                    frame = worker_queue.get_nowait()
                     yield frame
                 except queue.Empty:  # pragma: NO COVER
-                    continue
+                    break
         finally:
             # No need for a lock because reading/replacing a variable is
             # defined to be an atomic operation in the Python language
@@ -751,7 +741,7 @@ def _download_table_bqstorage(
 
 
 def download_arrow_bqstorage(
-    project_id, table, bqstorage_client, preserve_order=False, selected_fields=None
+    project_id, table, bqstorage_client, preserve_order=False, selected_fields=None,
 ):
     return _download_table_bqstorage(
         project_id,
@@ -771,6 +761,7 @@ def download_dataframe_bqstorage(
     dtypes,
     preserve_order=False,
     selected_fields=None,
+    max_queue_size=_MAX_QUEUE_SIZE_DEFAULT,
 ):
     page_to_item = functools.partial(_bqstorage_page_to_dataframe, column_names, dtypes)
     return _download_table_bqstorage(
@@ -780,13 +771,14 @@ def download_dataframe_bqstorage(
         preserve_order=preserve_order,
         selected_fields=selected_fields,
         page_to_item=page_to_item,
+        max_queue_size=max_queue_size,
     )
 
 
 def dataframe_to_json_generator(dataframe):
     for row in dataframe.itertuples(index=False, name=None):
         output = {}
-        for column, value in six.moves.zip(dataframe.columns, row):
+        for column, value in zip(dataframe.columns, row):
             # Omit NaN values.
             if value != value:
                 continue

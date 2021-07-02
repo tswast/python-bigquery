@@ -15,17 +15,21 @@
 """Shared helper functions for BigQuery API classes."""
 
 import base64
-import copy
 import datetime
 import decimal
+import math
 import re
 
 from google.cloud._helpers import UTC
 from google.cloud._helpers import _date_from_iso8601_date
 from google.cloud._helpers import _datetime_from_microseconds
-from google.cloud._helpers import _microseconds_from_datetime
+from google.cloud._helpers import _RFC3339_MICROS
 from google.cloud._helpers import _RFC3339_NO_FRACTION
 from google.cloud._helpers import _to_bytes
+import pkg_resources
+
+from google.cloud.bigquery.exceptions import LegacyBigQueryStorageError
+
 
 _RFC3339_MICROS_NO_ZULU = "%Y-%m-%dT%H:%M:%S.%f"
 _TIMEONLY_WO_MICROS = "%H:%M:%S"
@@ -37,10 +41,36 @@ _PROJECT_PREFIX_PATTERN = re.compile(
     re.VERBOSE,
 )
 
+_MIN_BQ_STORAGE_VERSION = pkg_resources.parse_version("2.0.0")
+
+
+def _verify_bq_storage_version():
+    """Verify that a recent enough version of BigQuery Storage extra is installed.
+
+    The function assumes that google-cloud-bigquery-storage extra is installed, and
+    should thus be used in places where this assumption holds.
+
+    Because `pip` can install an outdated version of this extra despite the constraints
+    in setup.py, the the calling code can use this helper to verify the version
+    compatibility at runtime.
+    """
+    from google.cloud import bigquery_storage
+
+    installed_version = pkg_resources.parse_version(
+        getattr(bigquery_storage, "__version__", "legacy")
+    )
+
+    if installed_version < _MIN_BQ_STORAGE_VERSION:
+        msg = (
+            "Dependency google-cloud-bigquery-storage is outdated, please upgrade "
+            f"it to version >= 2.0.0 (version found: {installed_version})."
+        )
+        raise LegacyBigQueryStorageError(msg)
+
 
 def _not_null(value, field):
     """Check whether 'value' should be coerced to 'field' type."""
-    return value is not None or field.mode != "NULLABLE"
+    return value is not None or (field is not None and field.mode != "NULLABLE")
 
 
 def _int_from_json(value, field):
@@ -81,8 +111,8 @@ def _bytes_from_json(value, field):
 def _timestamp_from_json(value, field):
     """Coerce 'value' to a datetime, if set or not nullable."""
     if _not_null(value, field):
-        # value will be a float in seconds, to microsecond precision, in UTC.
-        return _datetime_from_microseconds(1e6 * float(value))
+        # value will be a integer in seconds, to microsecond precision, in UTC.
+        return _datetime_from_microseconds(int(value))
 
 
 def _timestamp_query_param_from_json(value, field):
@@ -188,6 +218,7 @@ _CELLDATA_FROM_JSON = {
     "FLOAT": _float_from_json,
     "FLOAT64": _float_from_json,
     "NUMERIC": _decimal_from_json,
+    "BIGNUMERIC": _decimal_from_json,
     "BOOLEAN": _bool_from_json,
     "BOOL": _bool_from_json,
     "STRING": _string_from_json,
@@ -275,7 +306,12 @@ def _int_to_json(value):
 
 def _float_to_json(value):
     """Coerce 'value' to an JSON-compatible representation."""
-    return value
+    if value is None:
+        return None
+    elif math.isnan(value) or math.isinf(value):
+        return str(value)
+    else:
+        return float(value)
 
 
 def _decimal_to_json(value):
@@ -313,18 +349,23 @@ def _timestamp_to_json_parameter(value):
 
 
 def _timestamp_to_json_row(value):
-    """Coerce 'value' to an JSON-compatible representation.
-
-    This version returns floating-point seconds value used in row data.
-    """
+    """Coerce 'value' to an JSON-compatible representation."""
     if isinstance(value, datetime.datetime):
-        value = _microseconds_from_datetime(value) * 1e-6
+        # For naive datetime objects UTC timezone is assumed, thus we format
+        # those to string directly without conversion.
+        if value.tzinfo is not None:
+            value = value.astimezone(UTC)
+        value = value.strftime(_RFC3339_MICROS)
     return value
 
 
 def _datetime_to_json(value):
     """Coerce 'value' to an JSON-compatible representation."""
     if isinstance(value, datetime.datetime):
+        # For naive datetime objects UTC timezone is assumed, thus we format
+        # those to string directly without conversion.
+        if value.tzinfo is not None:
+            value = value.astimezone(UTC)
         value = value.strftime(_RFC3339_MICROS_NO_ZULU)
     return value
 
@@ -350,6 +391,7 @@ _SCALAR_VALUE_TO_JSON_ROW = {
     "FLOAT": _float_to_json,
     "FLOAT64": _float_to_json,
     "NUMERIC": _decimal_to_json,
+    "BIGNUMERIC": _decimal_to_json,
     "BOOLEAN": _bool_to_json,
     "BOOL": _bool_to_json,
     "BYTES": _bytes_to_json,
@@ -357,6 +399,11 @@ _SCALAR_VALUE_TO_JSON_ROW = {
     "DATETIME": _datetime_to_json,
     "DATE": _date_to_json,
     "TIME": _time_to_json,
+    # Make sure DECIMAL and BIGDECIMAL are handled, even though
+    # requests for them should be converted to NUMERIC.  Better safe
+    # than sorry.
+    "DECIMAL": _decimal_to_json,
+    "BIGDECIMAL": _decimal_to_json,
 }
 
 
@@ -396,13 +443,9 @@ def _repeated_field_to_json(field, row_value):
     Returns:
         List[Any]: A list of JSON-serializable objects.
     """
-    # Remove the REPEATED, but keep the other fields. This allows us to process
-    # each item as if it were a top-level field.
-    item_field = copy.deepcopy(field)
-    item_field._mode = "NULLABLE"
     values = []
     for item in row_value:
-        values.append(_field_to_json(item_field, item))
+        values.append(_single_field_to_json(field, item))
     return values
 
 
@@ -419,8 +462,22 @@ def _record_field_to_json(fields, row_value):
     Returns:
         Mapping[str, Any]: A JSON-serializable dictionary.
     """
-    record = {}
     isdict = isinstance(row_value, dict)
+
+    # If row is passed as a tuple, make the length sanity check to avoid either
+    # uninformative index errors a few lines below or silently omitting some of
+    # the values from the result (we cannot know exactly which fields are missing
+    # or redundant, since we don't have their names).
+    if not isdict and len(row_value) != len(fields):
+        msg = "The number of row fields ({}) does not match schema length ({}).".format(
+            len(row_value), len(fields)
+        )
+        raise ValueError(msg)
+
+    record = {}
+
+    if isdict:
+        processed_fields = set()
 
     for subindex, subfield in enumerate(fields):
         subname = subfield.name
@@ -430,7 +487,48 @@ def _record_field_to_json(fields, row_value):
         if subvalue is not None:
             record[subname] = _field_to_json(subfield, subvalue)
 
+        if isdict:
+            processed_fields.add(subname)
+
+    # Unknown fields should not be silently dropped, include them. Since there
+    # is no schema information available for them, include them as strings
+    # to make them JSON-serializable.
+    if isdict:
+        not_processed = set(row_value.keys()) - processed_fields
+
+        for field_name in not_processed:
+            value = row_value[field_name]
+            if value is not None:
+                record[field_name] = str(value)
+
     return record
+
+
+def _single_field_to_json(field, row_value):
+    """Convert a single field into JSON-serializable values.
+
+    Ignores mode so that this can function for ARRAY / REPEATING fields
+    without requiring a deepcopy of the field. See:
+    https://github.com/googleapis/python-bigquery/issues/6
+
+    Args:
+        field (google.cloud.bigquery.schema.SchemaField):
+            The SchemaField to use for type conversion and field name.
+
+        row_value (Any):
+            Scalar or Struct to be inserted. The type
+            is inferred from the SchemaField's field_type.
+
+    Returns:
+        Any: A JSON-serializable object.
+    """
+    if row_value is None:
+        return None
+
+    if field.field_type == "RECORD":
+        return _record_field_to_json(field.fields, row_value)
+
+    return _scalar_field_to_json(field, row_value)
 
 
 def _field_to_json(field, row_value):
@@ -454,10 +552,7 @@ def _field_to_json(field, row_value):
     if field.mode == "REPEATED":
         return _repeated_field_to_json(field, row_value)
 
-    if field.field_type == "RECORD":
-        return _record_field_to_json(field.fields, row_value)
-
-    return _scalar_field_to_json(field, row_value)
+    return _single_field_to_json(field, row_value)
 
 
 def _snake_to_camel_case(value):

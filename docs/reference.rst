@@ -59,7 +59,10 @@ Job-Related Types
     job.CreateDisposition
     job.DestinationFormat
     job.Encoding
+    job.QueryPlanEntry
+    job.QueryPlanEntryStep
     job.QueryPriority
+    job.ReservationUsage
     job.SourceFormat
     job.WriteDisposition
     job.SchemaUpdateOption
@@ -108,6 +111,7 @@ Routine
 .. autosummary::
     :toctree: generated
 
+    routine.DeterminismLevel
     routine.Routine
     routine.RoutineArgument
     routine.RoutineReference
@@ -182,6 +186,7 @@ Encryption Configuration
 
     encryption_configuration.EncryptionConfiguration
 
+
 Additional Types
 ================
 
@@ -190,5 +195,4 @@ Protocol buffer classes for working with the Models API.
 .. toctree::
     :maxdepth: 2
 
-    gapic/v2/enums
-    gapic/v2/types
+    bigquery_v2/types

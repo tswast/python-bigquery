@@ -14,16 +14,38 @@
 
 from __future__ import absolute_import
 
+import pathlib
 import os
 import shutil
 
 import nox
 
 
+PYTYPE_VERSION = "pytype==2021.4.9"
+BLACK_VERSION = "black==19.10b0"
 BLACK_PATHS = ("docs", "google", "samples", "tests", "noxfile.py", "setup.py")
 
+DEFAULT_PYTHON_VERSION = "3.8"
+SYSTEM_TEST_PYTHON_VERSIONS = ["3.8"]
+UNIT_TEST_PYTHON_VERSIONS = ["3.6", "3.7", "3.8", "3.9"]
+CURRENT_DIRECTORY = pathlib.Path(__file__).parent.absolute()
 
-def default(session):
+# 'docfx' is excluded since it only needs to run in 'docs-presubmit'
+nox.options.sessions = [
+    "unit_noextras",
+    "unit",
+    "system",
+    "snippets",
+    "cover",
+    "lint",
+    "lint_setup_py",
+    "blacken",
+    "pytype",
+    "docs",
+]
+
+
+def default(session, install_extras=True):
     """Default unit test session.
 
     This is intended to be run **without** an interpreter set, so
@@ -31,29 +53,32 @@ def default(session):
     Python corresponding to the ``nox`` binary the ``PATH`` can
     run the tests.
     """
+    constraints_path = str(
+        CURRENT_DIRECTORY / "testing" / f"constraints-{session.python}.txt"
+    )
+
     # Install all test dependencies, then install local packages in-place.
     session.install(
-        "mock", "pytest", "google-cloud-testutils", "pytest-cov", "freezegun"
+        "mock",
+        "pytest",
+        "google-cloud-testutils",
+        "pytest-cov",
+        "freezegun",
+        "-c",
+        constraints_path,
     )
-    session.install("grpcio")
 
-    # fastparquet is not included in .[all] because, in general, it's redundant
-    # with pyarrow. We still want to run some unit tests with fastparquet
-    # serialization, though.
-    session.install("-e", ".[all,fastparquet]")
+    install_target = ".[all]" if install_extras else "."
+    session.install("-e", install_target, "-c", constraints_path)
 
-    # IPython does not support Python 2 after version 5.x
-    if session.python == "2.7":
-        session.install("ipython==5.5")
-    else:
-        session.install("ipython")
+    session.install("ipython", "-c", constraints_path)
 
     # Run py.test against the unit tests.
     session.run(
         "py.test",
         "--quiet",
-        "--cov=google.cloud.bigquery",
-        "--cov=tests.unit",
+        "--cov=google/cloud/bigquery",
+        "--cov=tests/unit",
         "--cov-append",
         "--cov-config=.coveragerc",
         "--cov-report=",
@@ -63,63 +88,107 @@ def default(session):
     )
 
 
-@nox.session(python=["2.7", "3.5", "3.6", "3.7", "3.8"])
+@nox.session(python=UNIT_TEST_PYTHON_VERSIONS)
 def unit(session):
     """Run the unit test suite."""
     default(session)
 
 
-@nox.session(python=["2.7", "3.8"])
+@nox.session(python=UNIT_TEST_PYTHON_VERSIONS[-1])
+def unit_noextras(session):
+    """Run the unit test suite."""
+    default(session, install_extras=False)
+
+
+@nox.session(python=DEFAULT_PYTHON_VERSION)
+def pytype(session):
+    """Run type checks."""
+    # An indirect dependecy attrs==21.1.0 breaks the check, and installing a less
+    # recent version avoids the error until a possibly better fix is found.
+    # https://github.com/googleapis/python-bigquery/issues/655
+    session.install("attrs==20.3.0")
+    session.install("-e", ".[all]")
+    session.install("ipython")
+    session.install(PYTYPE_VERSION)
+    session.run("pytype")
+
+
+@nox.session(python=SYSTEM_TEST_PYTHON_VERSIONS)
 def system(session):
     """Run the system test suite."""
+
+    constraints_path = str(
+        CURRENT_DIRECTORY / "testing" / f"constraints-{session.python}.txt"
+    )
+
+    # Check the value of `RUN_SYSTEM_TESTS` env var. It defaults to true.
+    if os.environ.get("RUN_SYSTEM_TESTS", "true") == "false":
+        session.skip("RUN_SYSTEM_TESTS is set to false, skipping")
 
     # Sanity check: Only run system tests if the environment variable is set.
     if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""):
         session.skip("Credentials must be set via environment variable.")
 
     # Use pre-release gRPC for system tests.
-    session.install("--pre", "grpcio")
+    session.install("--pre", "grpcio", "-c", constraints_path)
 
     # Install all test dependencies, then install local packages in place.
-    session.install("mock", "pytest", "psutil", "google-cloud-testutils")
-    session.install("google-cloud-storage")
-    session.install("fastavro")
-    session.install("-e", ".[all]")
-
-    # IPython does not support Python 2 after version 5.x
-    if session.python == "2.7":
-        session.install("ipython==5.5")
+    session.install(
+        "mock", "pytest", "psutil", "google-cloud-testutils", "-c", constraints_path
+    )
+    if os.environ.get("GOOGLE_API_USE_CLIENT_CERTIFICATE", "") == "true":
+        # mTLS test requires pyopenssl and latest google-cloud-storage
+        session.install("google-cloud-storage", "pyopenssl")
     else:
-        session.install("ipython")
+        session.install("google-cloud-storage", "-c", constraints_path)
+
+    # Data Catalog needed for the column ACL test with a real Policy Tag.
+    session.install("google-cloud-datacatalog", "-c", constraints_path)
+
+    session.install("-e", ".[all]", "-c", constraints_path)
+    session.install("ipython", "-c", constraints_path)
 
     # Run py.test against the system tests.
-    session.run(
-        "py.test", "--quiet", os.path.join("tests", "system.py"), *session.posargs
-    )
+    session.run("py.test", "--quiet", os.path.join("tests", "system"), *session.posargs)
 
 
-@nox.session(python=["2.7", "3.8"])
+@nox.session(python=SYSTEM_TEST_PYTHON_VERSIONS)
 def snippets(session):
     """Run the snippets test suite."""
+
+    # Check the value of `RUN_SNIPPETS_TESTS` env var. It defaults to true.
+    if os.environ.get("RUN_SNIPPETS_TESTS", "true") == "false":
+        session.skip("RUN_SNIPPETS_TESTS is set to false, skipping")
 
     # Sanity check: Only run snippets tests if the environment variable is set.
     if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", ""):
         session.skip("Credentials must be set via environment variable.")
 
+    constraints_path = str(
+        CURRENT_DIRECTORY / "testing" / f"constraints-{session.python}.txt"
+    )
+
     # Install all test dependencies, then install local packages in place.
-    session.install("mock", "pytest", "google-cloud-testutils")
-    session.install("google-cloud-storage")
-    session.install("grpcio")
-    session.install("-e", ".[all]")
+    session.install("mock", "pytest", "google-cloud-testutils", "-c", constraints_path)
+    session.install("google-cloud-storage", "-c", constraints_path)
+    session.install("grpcio", "-c", constraints_path)
+
+    session.install("-e", ".[all]", "-c", constraints_path)
 
     # Run py.test against the snippets tests.
     # Skip tests in samples/snippets, as those are run in a different session
     # using the nox config from that directory.
     session.run("py.test", os.path.join("docs", "snippets.py"), *session.posargs)
-    session.run("py.test", "samples", "--ignore=samples/snippets", *session.posargs)
+    session.run(
+        "py.test",
+        "samples",
+        "--ignore=samples/snippets",
+        "--ignore=samples/geography",
+        *session.posargs,
+    )
 
 
-@nox.session(python="3.8")
+@nox.session(python=DEFAULT_PYTHON_VERSION)
 def cover(session):
     """Run the final coverage report.
 
@@ -131,7 +200,43 @@ def cover(session):
     session.run("coverage", "erase")
 
 
-@nox.session(python="3.8")
+@nox.session(python=SYSTEM_TEST_PYTHON_VERSIONS)
+def prerelease_deps(session):
+    """Run all tests with prerelease versions of dependencies installed.
+
+    https://github.com/googleapis/python-bigquery/issues/95
+    """
+    # PyArrow prerelease packages are published to an alternative PyPI host.
+    # https://arrow.apache.org/docs/python/install.html#installing-nightly-packages
+    session.install(
+        "--extra-index-url", "https://pypi.fury.io/arrow-nightlies/", "--pre", "pyarrow"
+    )
+    session.install("--pre", "grpcio", "pandas")
+    session.install(
+        "freezegun",
+        "google-cloud-datacatalog",
+        "google-cloud-storage",
+        "google-cloud-testutils",
+        "IPython",
+        "mock",
+        "psutil",
+        "pytest",
+        "pytest-cov",
+    )
+    session.install("-e", ".[all]")
+
+    # Print out prerelease package versions.
+    session.run("python", "-c", "import grpc; print(grpc.__version__)")
+    session.run("python", "-c", "import pandas; print(pandas.__version__)")
+    session.run("python", "-c", "import pyarrow; print(pyarrow.__version__)")
+
+    # Run all tests, except a few samples tests which require extra dependencies.
+    session.run("py.test", "tests/unit")
+    session.run("py.test", "tests/system")
+    session.run("py.test", "samples/tests")
+
+
+@nox.session(python=DEFAULT_PYTHON_VERSION)
 def lint(session):
     """Run linters.
 
@@ -139,7 +244,7 @@ def lint(session):
     serious code quality issues.
     """
 
-    session.install("black", "flake8")
+    session.install("flake8", BLACK_VERSION)
     session.install("-e", ".")
     session.run("flake8", os.path.join("google", "cloud", "bigquery"))
     session.run("flake8", "tests")
@@ -148,7 +253,7 @@ def lint(session):
     session.run("black", "--check", *BLACK_PATHS)
 
 
-@nox.session(python="3.8")
+@nox.session(python=DEFAULT_PYTHON_VERSION)
 def lint_setup_py(session):
     """Verify that setup.py is valid (including RST check)."""
 
@@ -156,24 +261,21 @@ def lint_setup_py(session):
     session.run("python", "setup.py", "check", "--restructuredtext", "--strict")
 
 
-@nox.session(python="3.6")
+@nox.session(python=DEFAULT_PYTHON_VERSION)
 def blacken(session):
     """Run black.
     Format code to uniform standard.
-
-    This currently uses Python 3.6 due to the automated Kokoro run of synthtool.
-    That run uses an image that doesn't have 3.6 installed. Before updating this
-    check the state of the `gcp_ubuntu_config` we use for that Kokoro run.
     """
-    session.install("black")
+
+    session.install(BLACK_VERSION)
     session.run("black", *BLACK_PATHS)
 
 
-@nox.session(python="3.8")
+@nox.session(python=DEFAULT_PYTHON_VERSION)
 def docs(session):
     """Build the docs."""
 
-    session.install("ipython", "recommonmark", "sphinx", "sphinx_rtd_theme")
+    session.install("ipython", "recommonmark", "sphinx==4.0.1", "sphinx_rtd_theme")
     session.install("google-cloud-storage")
     session.install("-e", ".[all]")
 
@@ -183,6 +285,41 @@ def docs(session):
         "-W",  # warnings as errors
         "-T",  # show full traceback on exception
         "-N",  # no colors
+        "-b",
+        "html",
+        "-d",
+        os.path.join("docs", "_build", "doctrees", ""),
+        os.path.join("docs", ""),
+        os.path.join("docs", "_build", "html", ""),
+    )
+
+
+@nox.session(python=DEFAULT_PYTHON_VERSION)
+def docfx(session):
+    """Build the docfx yaml files for this library."""
+
+    session.install("-e", ".")
+    session.install(
+        "sphinx==4.0.1", "alabaster", "recommonmark", "gcp-sphinx-docfx-yaml"
+    )
+
+    shutil.rmtree(os.path.join("docs", "_build"), ignore_errors=True)
+    session.run(
+        "sphinx-build",
+        "-T",  # show full traceback on exception
+        "-N",  # no colors
+        "-D",
+        (
+            "extensions=sphinx.ext.autodoc,"
+            "sphinx.ext.autosummary,"
+            "docfx_yaml.extension,"
+            "sphinx.ext.intersphinx,"
+            "sphinx.ext.coverage,"
+            "sphinx.ext.napoleon,"
+            "sphinx.ext.todo,"
+            "sphinx.ext.viewcode,"
+            "recommonmark"
+        ),
         "-b",
         "html",
         "-d",

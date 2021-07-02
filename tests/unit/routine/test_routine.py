@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 #
 # Copyright 2019 Google LLC
 #
@@ -19,6 +18,7 @@ import datetime
 import pytest
 
 import google.cloud._helpers
+from google.cloud import bigquery
 from google.cloud import bigquery_v2
 
 
@@ -63,17 +63,18 @@ def test_ctor_w_properties(target_class):
         RoutineArgument(
             name="x",
             data_type=bigquery_v2.types.StandardSqlDataType(
-                type_kind=bigquery_v2.enums.StandardSqlDataType.TypeKind.INT64
+                type_kind=bigquery_v2.types.StandardSqlDataType.TypeKind.INT64
             ),
         )
     ]
     body = "x * 3"
     language = "SQL"
     return_type = bigquery_v2.types.StandardSqlDataType(
-        type_kind=bigquery_v2.enums.StandardSqlDataType.TypeKind.INT64
+        type_kind=bigquery_v2.types.StandardSqlDataType.TypeKind.INT64
     )
     type_ = "SCALAR_FUNCTION"
     description = "A routine description."
+    determinism_level = bigquery.DeterminismLevel.NOT_DETERMINISTIC
 
     actual_routine = target_class(
         routine_id,
@@ -83,6 +84,7 @@ def test_ctor_w_properties(target_class):
         return_type=return_type,
         type_=type_,
         description=description,
+        determinism_level=determinism_level,
     )
 
     ref = RoutineReference.from_string(routine_id)
@@ -93,6 +95,9 @@ def test_ctor_w_properties(target_class):
     assert actual_routine.return_type == return_type
     assert actual_routine.type_ == type_
     assert actual_routine.description == description
+    assert (
+        actual_routine.determinism_level == bigquery.DeterminismLevel.NOT_DETERMINISTIC
+    )
 
 
 def test_from_api_repr(target_class):
@@ -121,6 +126,7 @@ def test_from_api_repr(target_class):
         "routineType": "SCALAR_FUNCTION",
         "someNewField": "someValue",
         "description": "A routine description.",
+        "determinismLevel": bigquery.DeterminismLevel.DETERMINISTIC,
     }
     actual_routine = target_class.from_api_repr(resource)
 
@@ -141,18 +147,19 @@ def test_from_api_repr(target_class):
         RoutineArgument(
             name="x",
             data_type=bigquery_v2.types.StandardSqlDataType(
-                type_kind=bigquery_v2.enums.StandardSqlDataType.TypeKind.INT64
+                type_kind=bigquery_v2.types.StandardSqlDataType.TypeKind.INT64
             ),
         )
     ]
     assert actual_routine.body == "42"
     assert actual_routine.language == "SQL"
     assert actual_routine.return_type == bigquery_v2.types.StandardSqlDataType(
-        type_kind=bigquery_v2.enums.StandardSqlDataType.TypeKind.INT64
+        type_kind=bigquery_v2.types.StandardSqlDataType.TypeKind.INT64
     )
     assert actual_routine.type_ == "SCALAR_FUNCTION"
     assert actual_routine._properties["someNewField"] == "someValue"
     assert actual_routine.description == "A routine description."
+    assert actual_routine.determinism_level == "DETERMINISTIC"
 
 
 def test_from_api_repr_w_minimal_resource(target_class):
@@ -178,6 +185,7 @@ def test_from_api_repr_w_minimal_resource(target_class):
     assert actual_routine.return_type is None
     assert actual_routine.type_ is None
     assert actual_routine.description is None
+    assert actual_routine.determinism_level is None
 
 
 def test_from_api_repr_w_unknown_fields(target_class):
@@ -209,6 +217,7 @@ def test_from_api_repr_w_unknown_fields(target_class):
                 "returnType": {"typeKind": "INT64"},
                 "routineType": "SCALAR_FUNCTION",
                 "description": "A routine description.",
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED,
             },
             ["arguments"],
             {"arguments": [{"name": "x", "dataType": {"typeKind": "INT64"}}]},
@@ -221,6 +230,7 @@ def test_from_api_repr_w_unknown_fields(target_class):
                 "returnType": {"typeKind": "INT64"},
                 "routineType": "SCALAR_FUNCTION",
                 "description": "A routine description.",
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED,
             },
             ["body"],
             {"definitionBody": "x * 3"},
@@ -233,6 +243,7 @@ def test_from_api_repr_w_unknown_fields(target_class):
                 "returnType": {"typeKind": "INT64"},
                 "routineType": "SCALAR_FUNCTION",
                 "description": "A routine description.",
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED,
             },
             ["language"],
             {"language": "SQL"},
@@ -245,6 +256,7 @@ def test_from_api_repr_w_unknown_fields(target_class):
                 "returnType": {"typeKind": "INT64"},
                 "routineType": "SCALAR_FUNCTION",
                 "description": "A routine description.",
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED,
             },
             ["return_type"],
             {"returnType": {"typeKind": "INT64"}},
@@ -257,6 +269,7 @@ def test_from_api_repr_w_unknown_fields(target_class):
                 "returnType": {"typeKind": "INT64"},
                 "routineType": "SCALAR_FUNCTION",
                 "description": "A routine description.",
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED,
             },
             ["type_"],
             {"routineType": "SCALAR_FUNCTION"},
@@ -269,13 +282,37 @@ def test_from_api_repr_w_unknown_fields(target_class):
                 "returnType": {"typeKind": "INT64"},
                 "routineType": "SCALAR_FUNCTION",
                 "description": "A routine description.",
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED,
             },
             ["description"],
             {"description": "A routine description."},
         ),
         (
+            {
+                "arguments": [{"name": "x", "dataType": {"typeKind": "INT64"}}],
+                "definitionBody": "x * 3",
+                "language": "SQL",
+                "returnType": {"typeKind": "INT64"},
+                "routineType": "SCALAR_FUNCTION",
+                "description": "A routine description.",
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED,
+            },
+            ["determinism_level"],
+            {
+                "determinismLevel": bigquery.DeterminismLevel.DETERMINISM_LEVEL_UNSPECIFIED
+            },
+        ),
+        (
             {},
-            ["arguments", "language", "body", "type_", "return_type", "description"],
+            [
+                "arguments",
+                "language",
+                "body",
+                "type_",
+                "return_type",
+                "description",
+                "determinism_level",
+            ],
             {
                 "arguments": None,
                 "definitionBody": None,
@@ -283,6 +320,7 @@ def test_from_api_repr_w_unknown_fields(target_class):
                 "returnType": None,
                 "routineType": None,
                 "description": None,
+                "determinismLevel": None,
             },
         ),
         (
